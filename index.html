@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Roadtrip">
+<meta name="theme-color" content="#0e1420">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700;800;900&family=Archivo+Black&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<title>Striffler · Stief — USA Roadtrip</title>
+</head>
+<body>
+
+<!-- ============ INTRO ANIMATION ============ -->
+<div id="intro" aria-hidden="true">
+  <div class="intro-grain"></div>
+  <div class="intro-stripes"></div>
+  <div class="intro-stage">
+    <svg id="emblem" viewBox="0 0 300 300" role="img" aria-label="Striffler Stief Emblem"></svg>
+    <div class="intro-word top" data-word>STRIFFLER <span>·</span> STIEF</div>
+    <div class="intro-word sub" data-word>USA ROADTRIP</div>
+    <div class="intro-year" data-word>2026</div>
+    <div class="intro-route" data-word>2&nbsp;800&nbsp;MILES · 15 STOPS · 6 TRAVELERS</div>
+  </div>
+  <button id="skipIntro">Überspringen ›</button>
+</div>
+
+<!-- ============ AUTH-GATE (Registrieren / Anmelden) ============ -->
+<div id="profileGate" class="gate hidden">
+  <div class="gate-card">
+    <div class="gate-emblem"></div>
+    <h2>Wer bist du?</h2>
+    <p>Wähle dich aus und melde dich an — so weiß jeder, wer Fotos macht und wer im Chat schreibt.</p>
+    <div id="profileList" class="profile-list"></div>
+  </div>
+</div>
+
+<!-- ============ STANDORT-FREIGABE (nach dem Login) ============ -->
+<div id="locGate" class="gate hidden">
+  <div class="gate-card">
+    <div class="loc-gate-ico">📍</div>
+    <h2>Standort erlauben</h2>
+    <p>Damit die App eure <b>aktuellen Orte</b> anzeigen und Fotos genauer den Reisezielen zuordnen kann, braucht sie Zugriff auf euren Standort (über „Wo ist" / Karten). Nichts wird geteilt — der Standort bleibt auf dem Gerät.</p>
+    <button class="btn-primary loc-gate-btn" id="locGrant">📍 Standortzugriff erlauben</button>
+    <button class="link-reset" id="locLater">Später entscheiden</button>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="hidden">
+
+  <!-- HOME -->
+  <section class="page active" id="page-home" data-page="home">
+    <header class="home-head">
+      <div class="brand"><span class="brand-emblem"></span><div><b>STRIFFLER · STIEF</b><small id="tripDay">Roadtrip 2026</small></div></div>
+      <div class="home-head-right">
+        <div class="mode-badge" id="modeBadge">lokal</div>
+        <button class="acct-chip" id="acctChip" title="Abmelden"></button>
+      </div>
+    </header>
+
+    <div class="reveal today-card" id="todayCard"></div>
+
+    <div class="reveal loc-card" id="locCard">
+      <div class="loc-left">
+        <span class="loc-eyebrow">Standort</span>
+        <b id="locName">Wo sind wir gerade?</b>
+        <small id="locSub">Tippe, um den aktuellen Ort zu bestimmen</small>
+      </div>
+      <button class="loc-btn" id="locBtn">📍 Orten</button>
+    </div>
+
+    <div class="reveal upload-portal" id="uploadPortal">
+      <input id="fileInput" type="file" accept="image/*" multiple hidden>
+      <div class="up-inner">
+        <div class="up-ico">⤒</div>
+        <b>Fotos hochladen</b>
+        <small>Werden automatisch analysiert & einsortiert</small>
+      </div>
+      <div class="up-progress hidden" id="upProgress"><div class="up-bar"><div></div></div><span id="upTxt"></span></div>
+    </div>
+
+    <div class="reveal section-title"><span>Reiseplan</span><i></i></div>
+    <div class="agenda" id="agenda"></div>
+
+    <div class="reveal section-title"><span>To-Dos & Ziele</span><i></i></div>
+    <div class="todos" id="todos"></div>
+  </section>
+
+  <!-- ORDNER -->
+  <section class="page" id="page-folders" data-page="folders">
+    <header class="page-head"><h1>Ordner</h1><button class="ghost-btn" id="addSpotBtn">+ Spot</button></header>
+    <div class="folder-list" id="folderList"></div>
+  </section>
+
+  <!-- CHAT -->
+  <section class="page" id="page-chat" data-page="chat">
+    <header class="page-head"><h1>Familien-Chat</h1><span class="who" id="chatWho"></span></header>
+    <div class="chat-scroll" id="chatScroll"></div>
+    <div class="chat-compose">
+      <div class="chat-tags" id="chatTags">
+        <button data-tag="msg" class="on">Chat</button>
+        <button data-tag="todo">📌 To-do</button>
+        <button data-tag="ziel">📍 Ziel</button>
+        <button data-tag="wake">⏰ Aufstehzeit</button>
+      </div>
+      <div class="chat-input-row">
+        <input id="chatInput" type="text" placeholder="Nachricht…" autocomplete="off">
+        <button id="chatSend">➤</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROUTE -->
+  <section class="page" id="page-route" data-page="route">
+    <header class="page-head"><h1>Routenplaner</h1></header>
+    <div class="route-body">
+      <div class="route-date-row">
+        <label>Für den Tag</label>
+        <input type="date" id="routeDate">
+      </div>
+      <div class="route-add">
+        <input id="routeInput" type="text" list="stopSuggest" placeholder="Ziel hinzufügen (z.B. Zion NP)">
+        <datalist id="stopSuggest"></datalist>
+        <button id="routeAdd">+</button>
+      </div>
+      <div class="route-stops" id="routeStops"></div>
+      <button class="primary-btn" id="routeOptimize">🧭 Schnellste Route berechnen</button>
+      <div class="route-result hidden" id="routeResult"></div>
+    </div>
+  </section>
+
+  <!-- BOTTOM NAV -->
+  <nav class="tabbar">
+    <button class="tab active" data-goto="home"><span>◎</span>Home</button>
+    <button class="tab" data-goto="folders"><span>▦</span>Ordner</button>
+    <button class="tab" data-goto="chat"><span>✎</span>Chat</button>
+    <button class="tab" data-goto="route"><span>⤳</span>Route</button>
+  </nav>
+</div>
+
+<!-- Ordner-Detail -->
+<div id="folderDetail" class="overlay hidden"></div>
+<!-- Foto-Viewer -->
+<div id="viewer" class="viewer"></div>
+<!-- Modal (Register / Login / Spot / Move) -->
+<div id="modal" class="modal"><div class="sheet" id="sheet"></div></div>
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="exifr.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
