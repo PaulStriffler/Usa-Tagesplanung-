@@ -755,4 +755,20 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
   if (window.gsap) runIntro(); else afterIntro();
 })();
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Service Worker + automatisches Update: sobald eine neue Version aktiv wird,
+// lädt die Seite einmal neu — so sieht jede*r immer den aktuellen Stand.
+if ('serviceWorker' in navigator) {
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded) return; reloaded = true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.update();
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      nw && nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) nw.postMessage?.('skip');
+      });
+    });
+  }).catch(() => {});
+}
