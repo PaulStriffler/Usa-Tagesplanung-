@@ -755,20 +755,22 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
   if (window.gsap) runIntro(); else afterIntro();
 })();
 
-// Service Worker + automatisches Update: sobald eine neue Version aktiv wird,
-// lädt die Seite einmal neu — so sieht jede*r immer den aktuellen Stand.
+// Service Worker + automatisches Update auf ALLEN Geräten:
+// - beim Öffnen und alle 60 s wird auf eine neue Version geprüft
+// - sobald eine neue Version aktiv ist, lädt die App sich einmal von selbst neu
+//   (nicht beim allerersten Start → kein Flackern)
 if ('serviceWorker' in navigator) {
-  let reloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloaded) return; reloaded = true; location.reload();
+    if (refreshing || !hadController) return;
+    refreshing = true;
+    location.reload();
   });
   navigator.serviceWorker.register('sw.js').then(reg => {
     reg.update();
-    reg.addEventListener('updatefound', () => {
-      const nw = reg.installing;
-      nw && nw.addEventListener('statechange', () => {
-        if (nw.state === 'installed' && navigator.serviceWorker.controller) nw.postMessage?.('skip');
-      });
-    });
+    setInterval(() => reg.update(), 60000);
+    // auch beim Zurückholen der App in den Vordergrund prüfen
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update(); });
   }).catch(() => {});
 }
