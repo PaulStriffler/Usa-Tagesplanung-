@@ -1,8 +1,10 @@
-const CACHE = 'usareise-v4';
+const CACHE = 'usareise-v6';
 const ASSETS = [
   './', './index.html', './exifr.js', './manifest.webmanifest',
   './css/style.css',
   './js/app.js', './js/plan.js', './js/store.js', './js/analyze.js', './js/firebase-config.js',
+  './assets/pfp/dorothee.jpg', './assets/pfp/jens.jpg', './assets/pfp/alex.jpg',
+  './assets/pfp/hannah.jpg', './assets/pfp/maxi.jpg',
 ];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

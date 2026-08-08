@@ -3,13 +3,16 @@
 
 // Gedämpfte, aufeinander abgestimmte Palette — wirkt ruhiger & hochwertiger.
 export const FAMILY = [
-  { id: 'm1', name: 'Dorothee', color: '#b0483d' }, // Terrakotta
-  { id: 'm2', name: 'Jens',     color: '#2f6d8c' }, // Petrol-Blau
-  { id: 'm3', name: 'Alex',     color: '#c39a44' }, // Ocker-Gold
-  { id: 'm4', name: 'Hannah',   color: '#5c8a70' }, // Salbei-Grün
-  { id: 'm5', name: 'Maxi',     color: '#7a6aa6' }, // Staub-Violett
-  { id: 'm6', name: 'Paul',     color: '#c17a45' }, // Gebranntes Orange
+  { id: 'm1', name: 'Dorothee', color: '#b0483d', pfp: 'assets/pfp/dorothee.jpg' }, // Terrakotta
+  { id: 'm2', name: 'Jens',     color: '#2f6d8c', pfp: 'assets/pfp/jens.jpg' },     // Petrol-Blau
+  { id: 'm3', name: 'Alex',     color: '#c39a44', pfp: 'assets/pfp/alex.jpg' },     // Ocker-Gold
+  { id: 'm4', name: 'Hannah',   color: '#5c8a70', pfp: 'assets/pfp/hannah.jpg' },   // Salbei-Grün
+  { id: 'm5', name: 'Maxi',     color: '#7a6aa6', pfp: 'assets/pfp/maxi.jpg' },     // Staub-Violett
+  { id: 'm6', name: 'Paul',     color: '#c17a45', pfp: null },                       // Gebranntes Orange (kein Foto)
 ];
+
+// Profilbild-Pfad zu einem Mitglied (per id).
+export function pfpFor(id) { return (FAMILY.find(m => m.id === id) || {}).pfp || null; }
 
 // Orte für Foto-Zuordnung (GPS-Radius in km) + Reisetage (Datum) für Fallback ohne GPS.
 export const STOPS = [

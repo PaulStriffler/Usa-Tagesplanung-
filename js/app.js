@@ -1,6 +1,6 @@
-import { FAMILY, STOPS, ITINERARY, itineraryFor, nearestStop, haversine } from './plan.js';
+import { FAMILY, STOPS, ITINERARY, itineraryFor, nearestStop, haversine, pfpFor } from './plan.js';
 import * as store from './store.js';
-import { readExif, assignFolder, sharpness, phash, dedupeFolder } from './analyze.js';
+import { readExif, assignFolder, classify, reverseGeocode, sharpness, phash, dedupeFolder } from './analyze.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -9,10 +9,14 @@ const TODAY = '2026-08-07'; // Referenz-"heute" während der Reise (aktueller Re
 let PHOTOS = [];        // live Foto-Metadaten
 let CUSTOM = [];        // eigene Spots
 let ACCOUNTS = [];      // registrierte Accounts (pro Familienmitglied)
+let TODAY_OVERRIDE = {};// heute geänderte Werte (Aufstehzeit/Abfahrt) aus dem Chat
+let LAST_POS = null;    // zuletzt bestimmter Standort {lat,lng,ts}
 let PROFILE = null;
 let composeTag = 'msg';
 
 const authorName = () => PROFILE?.username || PROFILE?.name || '—';
+// Nur Dorothee (m1) & Jens (m2) dürfen Aufstehzeiten/Abfahrten festlegen.
+const isPlanner = () => PROFILE && (PROFILE.id === 'm1' || PROFILE.id === 'm2');
 
 // ============================================================
 // PASSWORT-HASH (SHA-256, damit kein Klartext gespeichert wird)
@@ -46,8 +50,8 @@ function buildEmblem() {
     <path d="M40 205 L92 150 L128 188 L172 132 L210 178 L260 205 Z" fill="#141d2e"/>
     <rect x="30" y="205" width="240" height="30" fill="#0e1420"/>
     ${Array.from({length:5},(_,i)=>`<path d="M${86+i*32} 96 l3.4 7 7.6 .6-5.8 5 1.9 7.4-6.9-4-6.9 4 1.9-7.4-5.8-5 7.6-.6z" fill="#f4ead6"/>`).join('')}
-    <text x="150" y="196" text-anchor="middle" font-family="Anton, sans-serif" font-size="58" fill="#f4ead6" letter-spacing="2">S·S</text>
-    <text x="150" y="252" text-anchor="middle" font-family="Anton, sans-serif" font-size="17" fill="#c99a44" letter-spacing="4">EST. 2026</text>
+    <path d="M40 200 Q150 168 260 200" fill="none" stroke="#e7c877" stroke-width="3" stroke-dasharray="4 6" stroke-linecap="round"/>
+    <text x="150" y="250" text-anchor="middle" font-family="Anton, sans-serif" font-size="16" fill="#c99a44" letter-spacing="5">EST. 2026</text>
   `;
 }
 
@@ -88,7 +92,11 @@ function showLocationGate() {
     if (!navigator.geolocation) { toast('Standort auf diesem Gerät nicht verfügbar'); return done(); }
     $('#locGrant').textContent = 'Warte auf Freigabe…';
     navigator.geolocation.getCurrentPosition(
-      () => { toast('Standort aktiviert 🎯'); done(); },
+      pos => {
+        LAST_POS = { lat: pos.coords.latitude, lng: pos.coords.longitude, ts: Date.now() };
+        try { localStorage.setItem('usareise.lastPos', JSON.stringify(LAST_POS)); } catch {}
+        toast('Standort aktiviert 🎯'); done();
+      },
       () => { toast('Standort später über „Orten" aktivierbar'); done(); },
       { enableHighAccuracy: true, timeout: 12000 });
   };
@@ -105,10 +113,14 @@ function showAuthGate() {
   const gate = $('#profileGate'); gate.classList.remove('hidden');
   $('#profileList').innerHTML = FAMILY.map(m => {
     const acc = accountFor(m.id);
-    return `<button data-id="${m.id}">
-      <span class="av" style="background:${m.color}">${m.name[0]}</span>
-      <span class="pl-name">${m.name}</span>
-      <span class="pl-status ${acc ? 'reg' : ''}">${acc ? '🔒 anmelden' : '＋ registrieren'}</span>
+    const av = m.pfp ? `<img src="${m.pfp}" alt="">` : m.name[0];
+    return `<button data-id="${m.id}" style="--mc:${m.color}">
+      <span class="pl-av">${av}</span>
+      <span class="pl-info">
+        <span class="pl-name">${m.name}</span>
+        <span class="pl-status ${acc ? 'reg' : ''}">${acc ? 'Anmelden' : 'Registrieren'}</span>
+      </span>
+      <span class="pl-arrow">${acc ? '🔒' : '›'}</span>
     </button>`;
   }).join('');
   $$('#profileList button').forEach(b => b.onclick = () => {
@@ -198,6 +210,7 @@ async function startApp() {
   store.onCollection('chat', renderChat, 'ts');
   store.onCollection('spots', list => { CUSTOM = list; renderFolders(); });
   store.onCollection('accounts', list => { ACCOUNTS = list; }, 'ts');
+  store.onCollection('today', list => { TODAY_OVERRIDE = list.find(d => d.id === TODAY) || {}; renderHome(); }, 'ts');
   store.onCollection('routes', () => {});
 
   revealOnScroll();
@@ -206,7 +219,10 @@ async function startApp() {
 function renderAccountChip() {
   const el = $('#acctChip');
   if (!el || !PROFILE) return;
-  el.innerHTML = `<span class="ac-av" style="background:${PROFILE.color}">${(authorName())[0]}</span><span class="ac-name">${esc(authorName())}</span>`;
+  const pfp = pfpFor(PROFILE.id);
+  const av = pfp ? `<span class="ac-av"><img src="${pfp}" alt=""></span>`
+                 : `<span class="ac-av" style="background:${PROFILE.color}">${(authorName())[0]}</span>`;
+  el.innerHTML = `${av}<span class="ac-name">${esc(authorName())}</span>`;
   el.onclick = logout;
 }
 
@@ -220,17 +236,22 @@ function renderHome() {
   $('#tripDay').textContent = idx >= 0 ? `Tag ${idx + 1} von ${ITINERARY.length}` : 'Roadtrip 2026';
 
   const t = itineraryFor(TODAY) || ITINERARY[0];
+  const ov = TODAY_OVERRIDE || {};
+  const wake = ov.wake || t.wake;                 // Aufstehzeit (Chat überschreibt Plan)
+  const changed = k => ov[k] ? ' changed' : '';   // Hervorhebung bei Chat-Änderung
   $('#todayCard').innerHTML = `
     <div class="tc-sun"></div>
     <div class="tc-eyebrow">${fmtDate(t.date)} · Heute</div>
     <div class="tc-title">${esc(t.title)}</div>
     <div class="tc-meta">
-      ${t.wake ? `<span class="chip">⏰ Aufstehen ${t.wake}</span>` : ''}
+      ${wake ? `<span class="chip${changed('wake')}">⏰ Aufstehen ${esc(wake)}</span>` : ''}
+      ${ov.departure ? `<span class="chip changed">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
       ${t.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
       ${t.km ? `<span class="chip">🚗 ${t.km} km</span>` : ''}
       ${t.hotel ? `<span class="chip">🛏 ${esc(t.hotel)}</span>` : ''}
     </div>
-    <div class="tc-acts">${(t.acts || []).slice(0, 4).map(a => `<span>${esc(a)}</span>`).join('')}</div>`;
+    <div class="tc-acts">${(t.acts || []).slice(0, 4).map(a => `<span>${esc(a)}</span>`).join('')}</div>
+    ${ov.note ? `<div class="tc-note">✎ ${esc(ov.note)}${ov.by ? ` — ${esc(ov.by)}` : ''}</div>` : ''}`;
 
   renderAgenda();
 }
@@ -270,18 +291,30 @@ function renderTodos(list) {
 // LOCATION
 // ============================================================
 function bindLocation() {
-  $('#locBtn').onclick = () => {
-    if (!navigator.geolocation) { toast('Standort nicht verfügbar'); return; }
-    $('#locSub').textContent = 'Bestimme Standort…';
-    navigator.geolocation.getCurrentPosition(pos => {
-      const { latitude: lat, longitude: lng } = pos.coords;
-      const near = nearestStop(lat, lng);
-      $('#locName').textContent = near ? near.stop.name : 'Unbekannt';
-      $('#locSub').textContent = near
-        ? (near.d < 5 ? 'Ihr seid mittendrin 🎯' : `ca. ${Math.round(near.d)} km entfernt · ${lat.toFixed(3)}, ${lng.toFixed(3)}`)
-        : `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    }, () => { $('#locSub').textContent = 'Standort abgelehnt oder Fehler'; }, { enableHighAccuracy: true, timeout: 10000 });
-  };
+  $('#locBtn').onclick = () => locate(true);
+  // gemerkten Standort laden (für Routenplanung ohne erneutes Fragen)
+  try { LAST_POS = JSON.parse(localStorage.getItem('usareise.lastPos') || 'null') || LAST_POS; } catch {}
+  // Automatisch orten, wenn die Freigabe schon erteilt wurde.
+  if (navigator.permissions?.query) {
+    navigator.permissions.query({ name: 'geolocation' })
+      .then(p => { if (p.state === 'granted') locate(false); }).catch(() => {});
+  }
+}
+function locate(interactive) {
+  if (!navigator.geolocation) { if (interactive) toast('Standort nicht verfügbar'); return; }
+  if (interactive) $('#locSub').textContent = 'Bestimme Standort…';
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    LAST_POS = { lat, lng, ts: Date.now() };
+    try { localStorage.setItem('usareise.lastPos', JSON.stringify(LAST_POS)); } catch {}
+    const near = nearestStop(lat, lng);
+    $('#locName').textContent = near ? near.stop.name : 'Aktueller Standort';
+    const dist = near ? (near.d < 5 ? 'Ihr seid mittendrin 🎯' : `ca. ${Math.round(near.d)} km entfernt`) : '';
+    $('#locSub').textContent = `${dist}${dist ? ' · ' : ''}${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+    const geo = await reverseGeocode(lat, lng);
+    if (geo) $('#locSub').textContent = `${dist}${dist ? ' · ' : ''}${geo}`;
+  }, () => { if (interactive) $('#locSub').textContent = 'Standort abgelehnt oder Fehler'; },
+    { enableHighAccuracy: true, timeout: 10000 });
 }
 
 // ============================================================
@@ -298,17 +331,23 @@ async function processFiles(files) {
   const touchedFolders = new Set();
 
   for (const f of files) {
-    txt.textContent = `Analysiere ${done + 1}/${files.length}…`;
+    txt.textContent = `Schaue Foto ${done + 1}/${files.length} an…`;
     try {
+      // 1) Foto ansehen: EXIF (GPS, Aufnahmezeit, Kamera) auslesen.
       const { gps, date, camera } = await readExif(f);
-      const folderId = assignFolder(gps, date);
+      // 2) Überlegen wo es hingehört: GPS-Ort → sonst Datum → sonst „Zum Einordnen".
+      const { folderId, confidence, reason } = classify(gps, date);
+      // 3) Schärfe & Bild-Fingerabdruck für Duplikat-Erkennung.
       const [sh, ph] = await Promise.all([sharpness(f), phash(f)]);
-      const place = folderId === '_unsorted' ? 'Unsortiert' : (STOPS.find(s => s.id === folderId)?.name || folderId);
+      // 4) Echte Ortsbestimmung „wo auf der Welt" per Geo-Dienst (nur wenn GPS da ist).
+      let geoLabel = null;
+      if (gps) { txt.textContent = `Bestimme Ort von Foto ${done + 1}/${files.length}…`; geoLabel = await reverseGeocode(gps.lat, gps.lng); }
+      const place = folderId === '_unsorted' ? 'Zum Einordnen' : (STOPS.find(s => s.id === folderId)?.name || folderId);
       await store.addPhoto(f, {
         folderId, name: f.name, date: date ? date.toISOString() : null,
-        gps: gps || null, place, photographer: authorName(),
-        photographerColor: PROFILE?.color || '#888', camera: camera || null,
-        sharpness: sh, phash: ph, kept: true, dupOf: null,
+        gps: gps || null, place, geoLabel, confidence, reason,
+        photographer: authorName(), photographerColor: PROFILE?.color || '#888',
+        camera: camera || null, sharpness: sh, phash: ph, kept: true, dupOf: null,
       });
       touchedFolders.add(folderId);
     } catch (e) { console.error(e); }
@@ -341,7 +380,7 @@ function onPhotosChanged() { renderFolders(); if (currentFolder) renderPhotoGrid
 // ============================================================
 function allFolderDefs() {
   return [
-    { id: '_unsorted', name: 'Unsortiert' },
+    { id: '_unsorted', name: 'Zum Einordnen' },
     ...CUSTOM.map(c => ({ ...c, custom: true })),
     ...STOPS,
   ];
@@ -379,7 +418,7 @@ function renderFolders() {
 
 // ---- Folder detail ----
 let currentFolder = null, showDups = false;
-function folderName(id) { return id === '_unsorted' ? 'Unsortiert' : (allFolderDefs().find(f => f.id === id)?.name || id); }
+function folderName(id) { return id === '_unsorted' ? 'Zum Einordnen' : (allFolderDefs().find(f => f.id === id)?.name || id); }
 
 function openFolder(id) {
   currentFolder = id; showDups = false;
@@ -417,7 +456,8 @@ async function renderPhotoGrid() {
       <div class="pinfo">
         <b>${esc(p.name)}</b>
         <div class="prow">📅 ${p.date ? fmtDateTime(p.date) : 'ohne Datum'}</div>
-        <div class="prow">📍 ${esc(p.place || '—')}</div>
+        <div class="prow">📍 ${esc(p.geoLabel || p.place || '—')}</div>
+        ${confBadge(p)}
         <span class="by"><span class="dot" style="background:${p.photographerColor || '#888'}"></span>${esc(p.photographer || '—')}</span>
         ${p.kept === false ? '<div class="dup-tag">Duplikat</div>' : ''}
       </div>
@@ -524,19 +564,41 @@ async function reassignAll() {
 // CHAT
 // ============================================================
 function bindChat() {
+  // Aufstehzeit-Tag nur für Planer (Dorothee & Jens) sichtbar.
+  const wakeBtn = $('#chatTags button[data-tag="wake"]');
+  if (wakeBtn && !isPlanner()) wakeBtn.remove();
   $$('#chatTags button').forEach(b => b.onclick = () => {
     $$('#chatTags button').forEach(x => x.classList.remove('on')); b.classList.add('on'); composeTag = b.dataset.tag;
-    $('#chatInput').placeholder = { msg: 'Nachricht…', todo: 'Neues To-do…', ziel: 'Reiseziel…', wake: 'z.B. „Morgen 6:30 aufstehen"' }[composeTag];
+    $('#chatInput').placeholder = { msg: 'Nachricht…', todo: 'Neues To-do…', ziel: 'Reiseziel…', wake: 'z.B. „Aufstehen 6:30" oder „Abfahrt 9:00"' }[composeTag];
   });
   $('#chatSend').onclick = sendChat;
   $('#chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 }
+// Uhrzeit aus Text ziehen: „6:30", „0630", „6 Uhr 30", „6 Uhr".
+function parseTime(text) {
+  let m = text.match(/(\d{1,2})[:.\s]?(\d{2})(?:\s*uhr)?/i);
+  if (!m) { m = text.match(/(\d{1,2})\s*uhr/i); if (m) m = [m[0], m[1], '0']; }
+  if (!m) return null;
+  const hh = +m[1], mm = +m[2];
+  if (hh > 23 || mm > 59) return null;
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+}
 async function sendChat() {
   const inp = $('#chatInput'); const text = inp.value.trim(); if (!text) return;
+  if (composeTag === 'wake' && !isPlanner()) { toast('Nur Dorothee & Jens dürfen Aufstehzeiten festlegen'); return; }
   inp.value = '';
   const ts = Date.now();
   await store.addDoc('chat', { text, tag: composeTag, author: authorName(), authorColor: PROFILE.color, authorId: PROFILE.id, ts });
-  if (composeTag !== 'msg') {
+  if (composeTag === 'wake') {
+    // Wirkt sofort auf die Heute-Karte oben. Abfahrt vs. Aufstehen anhand Stichwort.
+    const time = parseTime(text);
+    const patch = { by: authorName(), ts };
+    if (/abfahr|losfahr|losgeh|abreise|weiterfahr/i.test(text)) { if (time) patch.departure = time; else patch.note = text; }
+    else if (time) patch.wake = time;
+    else patch.note = text;
+    await store.setDocData('today', TODAY, patch);
+    toast(patch.wake ? `Aufstehzeit ${patch.wake} übernommen` : patch.departure ? `Abfahrt ${patch.departure} übernommen` : 'Heute aktualisiert');
+  } else if (composeTag === 'todo' || composeTag === 'ziel') {
     await store.addDoc('agenda', { text, kind: composeTag, by: authorName(), ts });
   }
 }
@@ -546,11 +608,16 @@ function renderChat(list) {
   const tagColor = { todo: '#c99a44', ziel: '#3f86c0', wake: '#b0483d' };
   el.innerHTML = list.map(m => {
     const mine = m.authorId === PROFILE.id;
-    return `<div class="msg ${mine ? 'mine' : ''}">
-      ${!mine ? `<div class="m-author" style="color:${m.authorColor || '#c99a44'}">${esc(m.author)}</div>` : ''}
-      ${m.tag && m.tag !== 'msg' ? `<div class="m-tag" style="background:${tagColor[m.tag]}22;color:${tagColor[m.tag]}">${tagLabel[m.tag]}</div>` : ''}
-      <div class="m-text">${esc(m.text)}</div>
-      <div class="m-time">${fmtTime(m.ts)}</div>
+    const pfp = pfpFor(m.authorId);
+    const av = pfp ? `<img src="${pfp}" alt="">` : esc((m.author || '?')[0]);
+    return `<div class="msg-row ${mine ? 'mine' : ''}">
+      <div class="m-av" style="--mc:${m.authorColor || '#888'}">${av}</div>
+      <div class="msg ${mine ? 'mine' : ''}">
+        ${!mine ? `<div class="m-author" style="color:${m.authorColor || '#c99a44'}">${esc(m.author)}</div>` : ''}
+        ${m.tag && m.tag !== 'msg' ? `<div class="m-tag" style="background:${tagColor[m.tag]}22;color:${tagColor[m.tag]}">${tagLabel[m.tag]}</div>` : ''}
+        <div class="m-text">${esc(m.text)}</div>
+        <div class="m-time">${fmtTime(m.ts)}</div>
+      </div>
     </div>`;
   }).join('');
   el.scrollTop = el.scrollHeight;
@@ -587,13 +654,22 @@ function renderRouteStops() {
 function optimizeRoute() {
   if (!routeStops.length) { toast('Erst Ziele hinzufügen'); return; }
   const build = origin => showRouteResult(orderStops(origin, routeStops));
+  // Gemerkten Standort nutzen, wenn frisch (<15 Min) — sonst neu bestimmen.
+  if (LAST_POS && Date.now() - LAST_POS.ts < 15 * 60 * 1000) {
+    build({ name: 'Aktueller Standort', lat: LAST_POS.lat, lng: LAST_POS.lng }); return;
+  }
   if (navigator.geolocation) {
     $('#routeOptimize').textContent = 'Bestimme Standort…';
     navigator.geolocation.getCurrentPosition(
-      pos => { $('#routeOptimize').textContent = '🧭 Schnellste Route berechnen'; build({ name: 'Aktueller Standort', lat: pos.coords.latitude, lng: pos.coords.longitude }); },
-      () => { $('#routeOptimize').textContent = '🧭 Schnellste Route berechnen'; build(null); },
+      pos => {
+        $('#routeOptimize').textContent = '🧭 Schnellste Route berechnen';
+        LAST_POS = { lat: pos.coords.latitude, lng: pos.coords.longitude, ts: Date.now() };
+        try { localStorage.setItem('usareise.lastPos', JSON.stringify(LAST_POS)); } catch {}
+        build({ name: 'Aktueller Standort', lat: LAST_POS.lat, lng: LAST_POS.lng });
+      },
+      () => { $('#routeOptimize').textContent = '🧭 Schnellste Route berechnen'; build(LAST_POS ? { name: 'Letzter Standort', lat: LAST_POS.lat, lng: LAST_POS.lng } : null); },
       { enableHighAccuracy: true, timeout: 8000 });
-  } else build(null);
+  } else build(LAST_POS ? { name: 'Letzter Standort', lat: LAST_POS.lat, lng: LAST_POS.lng } : null);
 }
 // Nearest-Neighbor über die Ziele mit Koordinaten; Unbekannte hinten anhängen.
 function orderStops(origin, stops) {
@@ -653,6 +729,13 @@ function revealOnScroll() {
   $$('#page-home .reveal').forEach(el => io.observe(el));
 }
 
+function confBadge(p) {
+  const c = p.confidence;
+  if (c === 'gps') return `<span class="conf ok" title="${esc(p.reason || '')}">📍 GPS-genau</span>`;
+  if (c === 'gps-near') return `<span class="conf ok" title="${esc(p.reason || '')}">📍 GPS (nahe)</span>`;
+  if (c === 'date') return `<span class="conf warn" title="${esc(p.reason || '')}">🗓 per Datum · bitte prüfen</span>`;
+  return '';
+}
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function tOf(p) { return p.date ? new Date(p.date).getTime() : (p.added || 0); }
 const WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'], MO = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];

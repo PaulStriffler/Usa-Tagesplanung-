@@ -205,7 +205,7 @@ export async function removeDoc(name, id) {
 }
 
 export async function setDocData(name, id, data) {
-  if (mode === 'cloud') { await fb.fs.setDoc(fb.fs.doc(fb.db, name, id), { ...data, id }); return; }
+  if (mode === 'cloud') { await fb.fs.setDoc(fb.fs.doc(fb.db, name, id), { ...data, id }, { merge: true }); return; }
   const list = lget(name, []); const i = list.findIndex(x => x.id === id);
   if (i >= 0) list[i] = { ...list[i], ...data, id }; else list.push({ ...data, id });
   lset(name, list);

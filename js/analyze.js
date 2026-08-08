@@ -21,32 +21,61 @@ export async function readExif(file) {
   return { gps, date: date ? new Date(date) : null, camera };
 }
 
-// ---------- Ort-Zuordnung ----------
-export function assignFolder(gps, date) {
-  // 1) GPS: kleinster passender Radius gewinnt (kleine Spots vor großen).
+// ---------- Ort-Zuordnung (mehrstufig, mit Confidence) ----------
+// Reihenfolge: 1) GPS exakt im Radius eines Spots  2) GPS in der Nähe eines Spots
+// 3) Datum → Zielort des Reisetags  4) nichts sicher → "Zum Einordnen".
+// Gibt { folderId, confidence, reason } zurück. confidence: 'gps' | 'gps-near' | 'date' | 'none'.
+export function classify(gps, date) {
   if (gps) {
+    // Kleinster passender Radius gewinnt (enge Spots wie Forrest Gump Point vor Monument Valley).
     let best = null;
     for (const s of STOPS) {
       const d = haversine(gps.lat, gps.lng, s.lat, s.lng);
       if (d <= s.r && (!best || s.r < best.r || (s.r === best.r && d < best.d)))
         best = { id: s.id, r: s.r, d };
     }
-    if (best) return best.id;
-    // außerhalb aller Radien → trotzdem nächster Stop als grobe Zuordnung
+    if (best) return { folderId: best.id, confidence: 'gps', reason: 'GPS im Zielgebiet' };
+    // Außerhalb aller Radien: wenn plausibel nah an einem Stop → dorthin (z. B. unterwegs).
     const near = nearestStop(gps.lat, gps.lng);
-    if (near && near.d < 120) return near.stop.id;
+    if (near && near.d <= 150) return { folderId: near.stop.id, confidence: 'gps-near', reason: `GPS ~${Math.round(near.d)} km von ${near.stop.name}` };
+    // GPS vorhanden, aber weit weg von allen Zielen → nicht raten.
+    return { folderId: '_unsorted', confidence: 'none', reason: 'GPS außerhalb der Reiseziele' };
   }
-  // 2) Datum → Reisetag
+  // Kein GPS → Datum: Zielort des Reisetags (Übernachtungsort), aber als unsicher markiert.
   if (date) {
     const iso = toLocalISO(date);
-    for (const s of STOPS) if (s.days && s.days.includes(iso)) return s.id;
+    const prim = primaryStopForDay(iso);
+    if (prim) return { folderId: prim.id, confidence: 'date', reason: 'kein GPS – anhand Reisetag' };
   }
-  return '_unsorted';
+  return { folderId: '_unsorted', confidence: 'none', reason: 'kein GPS, kein passendes Datum' };
+}
+
+// Kompatibler Wrapper (nur Ordner-ID) für Umsortier-Logik.
+export function assignFolder(gps, date) { return classify(gps, date).folderId; }
+
+// Zielort/Übernachtungsort eines Reisetags: unter den Stops des Tages der „Haupt-Hub"
+// (größter Radius, bei Gleichstand der spätere im Tagesverlauf).
+function primaryStopForDay(iso) {
+  const dayStops = STOPS.map((s, i) => ({ s, i })).filter(x => x.s.days && x.s.days.includes(iso));
+  if (!dayStops.length) return null;
+  dayStops.sort((a, b) => (b.s.r - a.s.r) || (b.i - a.i));
+  return dayStops[0].s;
 }
 
 function toLocalISO(d) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+// ---------- Echte Ortsbestimmung aus GPS (kostenloser Geo-Dienst, kein Schlüssel) ----------
+// Liefert einen lesbaren Ortsnamen wie "Page, Arizona, USA" — "wo auf der Welt".
+export async function reverseGeocode(lat, lng) {
+  try {
+    const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=de`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return [j.city || j.locality, j.principalSubdivision, j.countryName].filter(Boolean).join(', ') || null;
+  } catch { return null; }
 }
 
 // ---------- Bild dekodieren (klein) für Schärfe & Hash ----------
