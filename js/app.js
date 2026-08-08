@@ -1,6 +1,6 @@
 import { FAMILY, STOPS, ITINERARY, itineraryFor, nearestStop, haversine, pfpFor } from './plan.js';
 import * as store from './store.js';
-import { readExif, assignFolder, classify, reverseGeocode, sharpness, phash, dedupeFolder } from './analyze.js';
+import { readExif, assignFolder, classify, reverseGeocode, sharpness, phash, hamming } from './analyze.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -260,7 +260,7 @@ function renderAgenda() {
   const el = $('#agenda');
   el.innerHTML = ITINERARY.map((d, i) => {
     const isNow = d.date === TODAY;
-    return `<div class="agenda-card ${isNow ? 'now' : ''}">
+    return `<div class="agenda-card ${isNow ? 'now' : ''}" data-date="${d.date}">
       <div class="ac-num">${i + 1}</div>
       <div class="ac-date">${fmtDate(d.date)}${isNow ? ' · Heute' : ''}</div>
       <div class="ac-title">${esc(d.title)}</div>
@@ -268,9 +268,38 @@ function renderAgenda() {
         ${d.wake ? `<span>⏰ <b>${d.wake}</b> aufstehen</span>` : `<span>—</span>`}
         ${d.hotel ? `<span>🛏 ${esc(d.hotel)}</span>` : ''}
       </div>
+      <div class="ac-more">Antippen für Details ›</div>
     </div>`;
   }).join('');
+  el.querySelectorAll('.agenda-card').forEach(c => c.onclick = () => openDay(c.dataset.date));
   const now = el.querySelector('.now'); if (now) el.scrollLeft = now.offsetLeft - 12;
+}
+
+// Detail-Ansicht eines Reisetags mit voller Tagesplanung aus der PDF.
+function openDay(dateISO) {
+  const d = itineraryFor(dateISO); if (!d) return;
+  const i = ITINERARY.findIndex(x => x.date === dateISO);
+  const isNow = dateISO === TODAY;
+  const ov = isNow ? (TODAY_OVERRIDE || {}) : {};
+  const wake = ov.wake || d.wake;
+  openModal(`
+    <div class="day-head">
+      <div class="day-eyebrow">Tag ${i + 1} · ${fmtDate(d.date)}${isNow ? ' · Heute' : ''}</div>
+      <h3>${esc(d.title)}</h3>
+    </div>
+    <div class="day-chips">
+      ${wake ? `<span class="chip">⏰ Aufstehen ${esc(wake)}</span>` : ''}
+      ${ov.departure ? `<span class="chip">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
+      ${d.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
+      ${d.km ? `<span class="chip">🚗 ${d.km} km</span>` : ''}
+      ${d.hotel ? `<span class="chip">🛏 ${esc(d.hotel)}</span>` : ''}
+    </div>
+    <div class="day-acts">
+      ${(d.acts || []).map(a => `<div class="day-act">${esc(a)}</div>`).join('') || '<div class="empty-hint">Für diesen Tag ist noch nichts eingetragen.</div>'}
+    </div>
+    ${ov.note ? `<div class="day-note">✎ ${esc(ov.note)}${ov.by ? ` — ${esc(ov.by)}` : ''}</div>` : ''}
+    <div class="btns"><button class="btn-primary" id="dayClose">Schließen</button></div>`);
+  $('#dayClose').onclick = closeModal;
 }
 
 function renderTodos(list) {
@@ -328,7 +357,6 @@ function bindUpload() {
 async function processFiles(files) {
   const prog = $('#upProgress'), bar = prog.querySelector('.up-bar>div'), txt = $('#upTxt');
   prog.classList.remove('hidden'); bar.style.width = '0'; let done = 0;
-  const touchedFolders = new Set();
 
   for (const f of files) {
     txt.textContent = `Schaue Foto ${done + 1}/${files.length} an…`;
@@ -347,30 +375,39 @@ async function processFiles(files) {
         folderId, name: f.name, date: date ? date.toISOString() : null,
         gps: gps || null, place, geoLabel, confidence, reason,
         photographer: authorName(), photographerColor: PROFILE?.color || '#888',
-        camera: camera || null, sharpness: sh, phash: ph, kept: true, dupOf: null,
+        camera: camera || null, sharpness: sh, phash: ph,
       });
-      touchedFolders.add(folderId);
     } catch (e) { console.error(e); }
     done++; bar.style.width = (done / files.length * 100) + '%';
   }
-  txt.textContent = 'Suche Duplikate…';
-  setTimeout(async () => {
-    for (const fid of touchedFolders) await runDedupe(fid);
-    prog.classList.add('hidden');
-    toast(`${done} Foto${done === 1 ? '' : 's'} analysiert & einsortiert`);
-  }, 500);
+  prog.classList.add('hidden');
+  const n = files.length;
+  toast(`${n} Foto${n === 1 ? '' : 's'} analysiert & einsortiert`);
 }
 
-async function runDedupe(folderId) {
-  const inFolder = PHOTOS.filter(p => p.folderId === folderId);
-  if (inFolder.length < 2) return;
-  const clone = inFolder.map(p => ({ ...p }));
-  dedupeFolder(clone);
-  for (const p of clone) {
-    const orig = inFolder.find(o => o.id === p.id);
-    if (orig && (orig.kept !== p.kept || orig.dupOf !== p.dupOf))
-      await store.updatePhoto(p.id, { kept: p.kept, dupOf: p.dupOf });
+// Duplikate zur ANZEIGE zusammenfassen (kein Schreiben → für alle konsistent,
+// keine Doppelten mehr). Serien am selben Ort/Zeit werden gruppiert, je Gruppe
+// bleiben die 2 schärfsten sichtbar. Gibt { reps, hiddenCount } zurück.
+function dedupeVisible(list) {
+  const sorted = [...list].sort((a, b) => tOf(a) - tOf(b));
+  const used = new Array(sorted.length).fill(false);
+  const reps = []; let hiddenCount = 0;
+  const GAP = 120 * 1000, THRESH = 8;
+  for (let i = 0; i < sorted.length; i++) {
+    if (used[i]) continue;
+    const group = [sorted[i]]; used[i] = true;
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (used[j]) continue;
+      const near = sorted[i].phash && sorted[j].phash && hamming(sorted[i].phash, sorted[j].phash) <= THRESH;
+      const t1 = tOf(sorted[i]), t2 = tOf(sorted[j]);
+      const closeTime = Math.abs(t1 - t2) <= GAP || !sorted[i].date || !sorted[j].date;
+      if (near && closeTime) { group.push(sorted[j]); used[j] = true; }
+    }
+    group.sort((a, b) => (b.sharpness || 0) - (a.sharpness || 0));
+    group.forEach((p, rank) => { if (rank < 2) reps.push(p); else hiddenCount++; });
   }
+  reps.sort((a, b) => tOf(a) - tOf(b));
+  return { reps, hiddenCount };
 }
 
 function onPhotosChanged() { renderFolders(); if (currentFolder) renderPhotoGrid(); }
@@ -386,10 +423,15 @@ function allFolderDefs() {
   ];
 }
 function renderFolders() {
-  const counts = {};
-  for (const p of PHOTOS) if (p.kept !== false) counts[p.folderId] = (counts[p.folderId] || 0) + 1;
-  const covers = {};
-  for (const p of PHOTOS) if (p.kept !== false && !covers[p.folderId]) covers[p.folderId] = p;
+  // Pro Ordner die Fotos entdoppeln → echte Anzahl + Cover.
+  const byFolder = {};
+  for (const p of PHOTOS) (byFolder[p.folderId] = byFolder[p.folderId] || []).push(p);
+  const counts = {}, covers = {};
+  for (const fid in byFolder) {
+    const { reps } = dedupeVisible(byFolder[fid]);
+    counts[fid] = reps.length;
+    if (reps.length) covers[fid] = reps[0];
+  }
 
   const defs = allFolderDefs().filter(f => f.id !== '_unsorted' || counts['_unsorted']);
   defs.sort((a, b) => {
@@ -440,14 +482,14 @@ function openFolder(id) {
 
 async function renderPhotoGrid() {
   if (!currentFolder) return;
-  let list = PHOTOS.filter(p => p.folderId === currentFolder);
-  const hiddenCount = list.filter(p => p.kept === false).length;
-  list.sort((a, b) => tOf(a) - tOf(b));
-  const shown = showDups ? list : list.filter(p => p.kept !== false);
-  $('#odCount').textContent = `${list.filter(p => p.kept !== false).length} Fotos${hiddenCount ? ` · ${hiddenCount} Duplikat${hiddenCount === 1 ? '' : 'e'} ausgeblendet` : ''}`;
+  const list = PHOTOS.filter(p => p.folderId === currentFolder).sort((a, b) => tOf(a) - tOf(b));
+  const { reps, hiddenCount } = dedupeVisible(list);
+  const shown = showDups ? list : reps;
+  $('#odCount').textContent = `${reps.length} Fotos${hiddenCount ? ` · ${hiddenCount} Duplikat${hiddenCount === 1 ? '' : 'e'} ausgeblendet` : ''}`;
   const tgl = $('#odDupToggle'); tgl.textContent = hiddenCount ? (showDups ? 'Duplikate verbergen' : 'Alle zeigen') : '';
   tgl.style.visibility = hiddenCount ? 'visible' : 'hidden';
 
+  const repIds = new Set(reps.map(r => r.id));
   const grid = $('#odGrid');
   if (!shown.length) { grid.innerHTML = `<div class="empty-hint" style="grid-column:1/-1">Noch keine Fotos in diesem Ordner.</div>`; return; }
   grid.innerHTML = shown.map(p => `
@@ -459,7 +501,7 @@ async function renderPhotoGrid() {
         <div class="prow">📍 ${esc(p.geoLabel || p.place || '—')}</div>
         ${confBadge(p)}
         <span class="by"><span class="dot" style="background:${p.photographerColor || '#888'}"></span>${esc(p.photographer || '—')}</span>
-        ${p.kept === false ? '<div class="dup-tag">Duplikat</div>' : ''}
+        ${!repIds.has(p.id) ? '<div class="dup-tag">Duplikat</div>' : ''}
       </div>
     </div>`).join('');
   grid.querySelectorAll('.pcard').forEach(c => c.onclick = () => openViewer(c.dataset.id));

@@ -145,6 +145,18 @@ input,textarea{font-size:16px} /* verhindert iOS-Zoom beim Fokus */
 .agenda-card .ac-sub{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
 .agenda-card .ac-sub b{color:var(--text);font-weight:700}
 .agenda-card .ac-num{position:absolute;top:8px;right:12px;font-family:var(--disp);font-size:34px;color:var(--line2);line-height:1}
+.agenda-card{cursor:pointer;transition:transform .1s,border-color .15s}
+.agenda-card:active{transform:scale(.98)}
+.agenda-card .ac-more{margin-top:9px;font-size:11px;font-weight:700;letter-spacing:.3px;color:var(--gold)}
+/* Tages-Detail im Sheet */
+.day-head .day-eyebrow{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);font-weight:700;margin-bottom:4px}
+.day-head h3{margin:0 0 12px}
+.day-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.day-chips .chip{font-size:12px;font-weight:700;padding:6px 10px;border-radius:20px;background:var(--panel2);border:1px solid var(--line2);display:inline-flex;gap:5px;align-items:center}
+.day-acts{display:flex;flex-direction:column;gap:8px}
+.day-act{position:relative;padding:11px 13px 11px 30px;background:var(--ink2);border:1px solid var(--line);border-radius:11px;font-size:14px;line-height:1.35}
+.day-act::before{content:'▸';position:absolute;left:12px;top:11px;color:var(--gold);font-weight:700}
+.day-note{margin-top:12px;padding:10px 12px;background:rgba(201,154,68,.12);border:1px solid rgba(201,154,68,.3);border-radius:11px;font-size:13px;color:var(--amber)}
 
 .todos{display:flex;flex-direction:column;gap:9px}
 .todo-row{display:flex;align-items:center;gap:11px;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:12px 13px}

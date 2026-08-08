@@ -25,42 +25,32 @@ export async function readExif(file) {
 // Reihenfolge: 1) GPS exakt im Radius eines Spots  2) GPS in der Nähe eines Spots
 // 3) Datum → Zielort des Reisetags  4) nichts sicher → "Zum Einordnen".
 // Gibt { folderId, confidence, reason } zurück. confidence: 'gps' | 'gps-near' | 'date' | 'none'.
+// Toleranz um den Radius herum (GPS ist selten centimetergenau, aber wir wollen
+// NICHT in einen weit entfernten Ordner kippen). 3 km Puffer reicht.
+const GPS_SLACK = 3;
+
 export function classify(gps, date) {
   if (gps) {
-    // Kleinster passender Radius gewinnt (enge Spots wie Forrest Gump Point vor Monument Valley).
+    // Der Ort, in dessen Gebiet das Foto TATSÄCHLICH liegt: nächstgelegener Stop,
+    // dessen (Radius + kleiner Puffer) die Koordinate enthält. Kleinste Distanz gewinnt
+    // → enge Spots (Forrest Gump Point, Horseshoe Bend) schlagen automatisch große.
     let best = null;
     for (const s of STOPS) {
       const d = haversine(gps.lat, gps.lng, s.lat, s.lng);
-      if (d <= s.r && (!best || s.r < best.r || (s.r === best.r && d < best.d)))
-        best = { id: s.id, r: s.r, d };
+      if (d <= s.r + GPS_SLACK && (!best || d < best.d)) best = { id: s.id, d, name: s.name };
     }
-    if (best) return { folderId: best.id, confidence: 'gps', reason: 'GPS im Zielgebiet' };
-    // Außerhalb aller Radien: wenn plausibel nah an einem Stop → dorthin (z. B. unterwegs).
+    if (best) return { folderId: best.id, confidence: 'gps', reason: `GPS am Ort (${Math.round(best.d)} km zum Zentrum)` };
+    // GPS vorhanden, aber an KEINEM bekannten Reiseziel → bewusst nicht raten.
     const near = nearestStop(gps.lat, gps.lng);
-    if (near && near.d <= 150) return { folderId: near.stop.id, confidence: 'gps-near', reason: `GPS ~${Math.round(near.d)} km von ${near.stop.name}` };
-    // GPS vorhanden, aber weit weg von allen Zielen → nicht raten.
-    return { folderId: '_unsorted', confidence: 'none', reason: 'GPS außerhalb der Reiseziele' };
+    return { folderId: '_unsorted', confidence: 'none', reason: near ? `GPS ~${Math.round(near.d)} km von ${near.stop.name} – kein Treffer` : 'GPS ohne Treffer' };
   }
-  // Kein GPS → Datum: Zielort des Reisetags (Übernachtungsort), aber als unsicher markiert.
-  if (date) {
-    const iso = toLocalISO(date);
-    const prim = primaryStopForDay(iso);
-    if (prim) return { folderId: prim.id, confidence: 'date', reason: 'kein GPS – anhand Reisetag' };
-  }
-  return { folderId: '_unsorted', confidence: 'none', reason: 'kein GPS, kein passendes Datum' };
+  // Kein GPS: NICHT nach Tag in einen großen Ordner werfen (das war der Fehler) —
+  // ohne Ortsdaten bleibt die Zuordnung unsicher → „Zum Einordnen".
+  return { folderId: '_unsorted', confidence: 'none', reason: 'kein GPS im Foto – bitte manuell einordnen' };
 }
 
 // Kompatibler Wrapper (nur Ordner-ID) für Umsortier-Logik.
 export function assignFolder(gps, date) { return classify(gps, date).folderId; }
-
-// Zielort/Übernachtungsort eines Reisetags: unter den Stops des Tages der „Haupt-Hub"
-// (größter Radius, bei Gleichstand der spätere im Tagesverlauf).
-function primaryStopForDay(iso) {
-  const dayStops = STOPS.map((s, i) => ({ s, i })).filter(x => x.s.days && x.s.days.includes(iso));
-  if (!dayStops.length) return null;
-  dayStops.sort((a, b) => (b.s.r - a.s.r) || (b.i - a.i));
-  return dayStops[0].s;
-}
 
 function toLocalISO(d) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
