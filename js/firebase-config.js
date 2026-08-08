@@ -1,25 +1,18 @@
 // ┌─────────────────────────────────────────────────────────────────┐
-// │  HIER DEINE FIREBASE-CONFIG EINFÜGEN, DANN TEILEN ALLE 6 HANDYS   │
-// │  Solange leer, läuft die App lokal auf DIESEM Gerät (zum Testen). │
+// │  Firebase-Config für "usa-reise" — alle 6 Geräte teilen sich      │
+// │  dadurch Fotos, Chat, To-Dos & Routen live.                       │
 // └─────────────────────────────────────────────────────────────────┘
-//
-// So bekommst du die Werte (einmalig, ~3 Min, kostenlos):
-//  1. console.firebase.google.com  →  "Projekt hinzufügen"  → Namen z.B. "usa-reise"
-//  2. Im Projekt:  ⚙ Projekteinstellungen → unten "Web-App" (</>-Symbol) hinzufügen
-//  3. Firebase zeigt dir ein "firebaseConfig = { ... }" — die Werte hier eintragen.
-//  4. Linke Leiste: "Firestore Database" → Datenbank erstellen (Test-/Produktionsmodus)
-//  5. Linke Leiste: "Storage" → aktivieren
-//  6. "Authentication" → Anmeldeanbieter → "Anonym" aktivieren
-//
-// Danach: alle öffnen dieselbe URL, registrieren sich einmal — fertig, alles synchron.
+// Der apiKey ist bei Firebase-Web-Apps bewusst öffentlich — der Schutz
+// läuft über die Firestore-/Storage-Regeln, nicht über den Key.
 
 export const firebaseConfig = {
-  // apiKey: "…",
-  // authDomain: "…",
-  // projectId: "…",
-  // storageBucket: "…",
-  // messagingSenderId: "…",
-  // appId: "…",
+  apiKey: "AIzaSyBE4_BDEfQ6_1wt-Y-lznmN7ey7c7AeBF8",
+  authDomain: "usa-reise-dbcd9.firebaseapp.com",
+  projectId: "usa-reise-dbcd9",
+  storageBucket: "usa-reise-dbcd9.firebasestorage.app",
+  messagingSenderId: "123523149267",
+  appId: "1:123523149267:web:8931b546c8b0977a4d5326",
+  measurementId: "G-3GMXD7BP1M"
 };
 
 export const isConfigured = Object.keys(firebaseConfig).length > 0 && !!firebaseConfig.projectId;
