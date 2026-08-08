@@ -417,6 +417,7 @@ function onPhotosChanged() { renderFolders(); if (currentFolder) renderPhotoGrid
 // ============================================================
 function allFolderDefs() {
   return [
+    { id: '_group', name: 'Gruppenfotos', group: true },
     { id: '_unsorted', name: 'Zum Einordnen' },
     ...CUSTOM.map(c => ({ ...c, custom: true })),
     ...STOPS,
@@ -434,20 +435,19 @@ function renderFolders() {
   }
 
   const defs = allFolderDefs().filter(f => f.id !== '_unsorted' || counts['_unsorted']);
-  defs.sort((a, b) => {
-    if (a.id === '_unsorted') return -1; if (b.id === '_unsorted') return 1;
-    return (counts[b.id] || 0) - (counts[a.id] || 0);
-  });
+  const rank = id => id === '_group' ? -2 : id === '_unsorted' ? -1 : 0;
+  defs.sort((a, b) => (rank(a.id) - rank(b.id)) || ((counts[b.id] || 0) - (counts[a.id] || 0)));
 
   const el = $('#folderList');
   el.innerHTML = defs.map(f => {
     const c = counts[f.id] || 0, cover = covers[f.id];
     const days = f.days ? dateRange(f.days) : '';
-    return `<div class="folder-row ${f.custom ? 'custom' : ''} ${f.id === '_unsorted' ? 'unsorted' : ''}" data-id="${f.id}">
-      <div class="fr-cover ${cover ? '' : 'empty'}" ${cover ? `data-cover="${f.id}"` : ''}>${cover ? '' : '📷'}</div>
+    const meta = f.group ? 'Gemeinsame Gruppenbilder' : (days || (f.id === '_unsorted' ? 'Ohne Ort/Datum' : 'Reiseziel'));
+    return `<div class="folder-row ${f.custom ? 'custom' : ''} ${f.id === '_unsorted' ? 'unsorted' : ''} ${f.group ? 'groupf' : ''}" data-id="${f.id}">
+      <div class="fr-cover ${cover ? '' : 'empty'}" ${cover ? `data-cover="${f.id}"` : ''}>${cover ? '' : (f.group ? '👥' : '📷')}</div>
       <div class="fr-body">
-        <b>${f.custom ? '<span class="badge-star">★</span>' : ''}${esc(f.name)}</b>
-        <div class="fr-meta">${days || (f.id === '_unsorted' ? 'Ohne Ort/Datum' : 'Reiseziel')}</div>
+        <b>${f.custom ? '<span class="badge-star">★</span>' : ''}${f.group ? '<span class="badge-star">👥</span>' : ''}${esc(f.name)}</b>
+        <div class="fr-meta">${meta}</div>
       </div>
       <div class="fr-count"><b>${c}</b><small>FOTOS</small></div>
     </div>`;
@@ -460,7 +460,7 @@ function renderFolders() {
 
 // ---- Folder detail ----
 let currentFolder = null, showDups = false;
-function folderName(id) { return id === '_unsorted' ? 'Zum Einordnen' : (allFolderDefs().find(f => f.id === id)?.name || id); }
+function folderName(id) { return id === '_unsorted' ? 'Zum Einordnen' : id === '_group' ? 'Gruppenfotos' : (allFolderDefs().find(f => f.id === id)?.name || id); }
 
 function openFolder(id) {
   currentFolder = id; showDups = false;
@@ -775,6 +775,7 @@ function confBadge(p) {
   const c = p.confidence;
   if (c === 'gps') return `<span class="conf ok" title="${esc(p.reason || '')}">📍 GPS-genau</span>`;
   if (c === 'gps-near') return `<span class="conf ok" title="${esc(p.reason || '')}">📍 GPS (nahe)</span>`;
+  if (c === 'time') return `<span class="conf warn" title="${esc(p.reason || '')}">🗓 nach Reiseplan · prüfen</span>`;
   if (c === 'date') return `<span class="conf warn" title="${esc(p.reason || '')}">🗓 per Datum · bitte prüfen</span>`;
   return '';
 }

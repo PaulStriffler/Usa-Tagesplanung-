@@ -84,6 +84,36 @@ export const ITINERARY = [
     acts:['Rückflug nach Hause'] },
 ];
 
+// ZEITPLAN je Tag: [StartMinute, EndMinute, StopId] aus der PDF-Tagesplanung.
+// Damit landen Fotos OHNE GPS trotzdem am richtigen Ort — anhand Datum + Uhrzeit
+// (z. B. 8.8. vormittags = Antelope Canyon, nachmittags = Grand Canyon).
+export const SCHEDULE = {
+  '2026-08-02': [[0,1440,'lv1']],
+  '2026-08-03': [[0,1440,'lv1']],
+  '2026-08-04': [[0,390,'lv1'],[390,660,'zion'],[660,1440,'bryce']],
+  '2026-08-05': [[0,630,'bryce'],[630,870,'capitol'],[870,1440,'moab']],
+  '2026-08-06': [[0,600,'moab'],[600,960,'canyonl'],[960,1440,'moab']],
+  '2026-08-07': [[0,540,'moab'],[540,1080,'mv'],[1080,1440,'hb']],
+  '2026-08-08': [[0,570,'page'],[570,840,'ant'],[840,1440,'gc']],
+  '2026-08-09': [[0,1020,'route66'],[1020,1140,'jt'],[1140,1440,'ps']],
+  '2026-08-10': [[0,1020,'ps'],[1020,1440,'la']],
+  '2026-08-11': [[0,1440,'la']],
+  '2026-08-12': [[0,720,'la'],[720,900,'sbarb'],[900,1440,'smaria']],
+  '2026-08-13': [[0,600,'smaria'],[600,720,'sansimeon'],[720,900,'bigsur'],[900,1020,'carmel'],[1020,1440,'sf']],
+  '2026-08-14': [[0,1440,'sf']],
+  '2026-08-15': [[0,720,'sf'],[720,1440,'yos']],
+  '2026-08-16': [[0,1080,'yos'],[1080,1440,'ridge']],
+  '2026-08-17': [[0,720,'ridge'],[720,1440,'lv2']],
+  '2026-08-18': [[0,1440,'lv2']],
+};
+
+// Ort laut Reiseplan zu einem Datum + Tageszeit (Minuten seit Mitternacht, Ortszeit).
+export function scheduleStopFor(dateISO, minutes) {
+  const day = SCHEDULE[dateISO]; if (!day) return null;
+  for (const [s, e, id] of day) if (minutes >= s && minutes < e) return id;
+  return day[day.length - 1][2];
+}
+
 export function haversine(aLat, aLng, bLat, bLng) {
   const R = 6371, toRad = x => x * Math.PI / 180;
   const dLat = toRad(bLat - aLat), dLng = toRad(bLng - aLng);

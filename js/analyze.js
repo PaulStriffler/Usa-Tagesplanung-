@@ -1,22 +1,71 @@
 // On-Device-Foto-Analyse: EXIF (GPS/Datum/Kamera), Schärfe, Duplikat-Hash.
 // Läuft komplett im Browser, offline, ohne API.
 
-import { STOPS, haversine, nearestStop } from './plan.js';
+import { STOPS, haversine, nearestStop, scheduleStopFor } from './plan.js';
 
 // ---------- EXIF ----------
+// Eigener Parser: findet den TIFF/Exif-Block im Datei-Bytestrom (funktioniert für
+// JPEG UND HEIC vom iPhone) und liest Aufnahmezeit, Kamera & GPS direkt aus.
+// exifr scheitert an vielen iPhone-HEICs — dieser Weg ist zuverlässig.
+function tiffExif(buf) {
+  const dv = new DataView(buf);
+  const N = Math.min(buf.byteLength - 4, 4000000); // bis 4 MB nach dem TIFF-Header scannen
+  let t = -1;
+  for (let i = 0; i < N; i++) {
+    const a = dv.getUint8(i);
+    if (a !== 0x49 && a !== 0x4D) continue;
+    const b = dv.getUint8(i + 1), c = dv.getUint8(i + 2), d = dv.getUint8(i + 3);
+    if ((a === 0x49 && b === 0x49 && c === 0x2A && d === 0x00) || (a === 0x4D && b === 0x4D && c === 0x00 && d === 0x2A)) { t = i; break; }
+  }
+  if (t < 0) return null;
+  const le = dv.getUint8(t) === 0x49;
+  const u16 = o => dv.getUint16(o, le), u32 = o => dv.getUint32(o, le);
+  const readIFD = off => {
+    const m = {}; if (off < 0 || off + 2 > buf.byteLength) return m;
+    const n = u16(off);
+    for (let e = 0; e < n; e++) { const eo = off + 2 + e * 12; if (eo + 12 > buf.byteLength) break; m[u16(eo)] = { type: u16(eo + 2), count: u32(eo + 4), vo: eo + 8 }; }
+    return m;
+  };
+  const ascii = en => { if (!en) return null; const len = en.count; let p = len <= 4 ? en.vo : t + u32(en.vo); let s = ''; for (let i = 0; i < len && p + i < buf.byteLength; i++) { const ch = dv.getUint8(p + i); if (ch === 0) break; s += String.fromCharCode(ch); } return s.trim() || null; };
+  const rats = en => { if (!en || en.count < 3) return null; const p = t + u32(en.vo); const r = i => { const num = u32(p + i * 8), den = u32(p + i * 8 + 4); return den ? num / den : 0; }; return r(0) + r(1) / 60 + r(2) / 3600; };
+  try {
+    const ifd0 = readIFD(t + u32(t + 4));
+    const exif = ifd0[0x8769] ? readIFD(t + u32(ifd0[0x8769].vo)) : {};
+    const dto = ascii(exif[0x9003]) || ascii(exif[0x9004]) || ascii(ifd0[0x0132]);
+    let date = null;
+    if (dto) { const m = dto.match(/(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/); if (m) date = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]); }
+    let gps = null;
+    if (ifd0[0x8825]) {
+      const g = readIFD(t + u32(ifd0[0x8825].vo));
+      let lat = rats(g[2]), lng = rats(g[4]);
+      if (lat != null && lng != null) {
+        if ((ascii(g[1]) || 'N') === 'S') lat = -lat;
+        if ((ascii(g[3]) || 'E') === 'W') lng = -lng;
+        if (lat || lng) gps = { lat, lng };
+      }
+    }
+    const camera = [ascii(ifd0[0x010F]), ascii(ifd0[0x0110])].filter(Boolean).join(' ').trim() || null;
+    return { date, gps, camera };
+  } catch (e) { return null; }
+}
+
 export async function readExif(file) {
   let gps = null, date = null, camera = null;
   try {
-    const meta = await exifr.parse(file, {
-      tiff: true, ifd0: true, exif: true, gps: true,
-      pick: ['DateTimeOriginal', 'CreateDate', 'Make', 'Model', 'GPSLatitude', 'GPSLongitude', 'GPSLatitudeRef', 'GPSLongitudeRef']
-    });
-    if (meta) {
-      if (meta.latitude != null && meta.longitude != null) gps = { lat: meta.latitude, lng: meta.longitude };
-      date = meta.DateTimeOriginal || meta.CreateDate || null;
-      camera = [meta.Make, meta.Model].filter(Boolean).join(' ').trim() || null;
-    }
-  } catch (e) { /* kein EXIF */ }
+    const buf = await file.arrayBuffer();
+    const t = tiffExif(buf);
+    if (t) { date = t.date; gps = t.gps; camera = t.camera; }
+  } catch (e) { /* weiter mit Fallback */ }
+  if (!date || !gps) {
+    try {
+      const meta = await exifr.parse(file, { tiff: true, ifd0: true, exif: true, gps: true, pick: ['DateTimeOriginal', 'CreateDate', 'Make', 'Model', 'GPSLatitude', 'GPSLongitude'] });
+      if (meta) {
+        if (!gps && meta.latitude != null && meta.longitude != null) gps = { lat: meta.latitude, lng: meta.longitude };
+        if (!date) date = meta.DateTimeOriginal || meta.CreateDate || null;
+        if (!camera) camera = [meta.Make, meta.Model].filter(Boolean).join(' ').trim() || null;
+      }
+    } catch (e) { /* kein EXIF */ }
+  }
   if (!date && file.lastModified) date = new Date(file.lastModified);
   return { gps, date: date ? new Date(date) : null, camera };
 }
@@ -44,9 +93,18 @@ export function classify(gps, date) {
     const near = nearestStop(gps.lat, gps.lng);
     return { folderId: '_unsorted', confidence: 'none', reason: near ? `GPS ~${Math.round(near.d)} km von ${near.stop.name} – kein Treffer` : 'GPS ohne Treffer' };
   }
-  // Kein GPS: NICHT nach Tag in einen großen Ordner werfen (das war der Fehler) —
-  // ohne Ortsdaten bleibt die Zuordnung unsicher → „Zum Einordnen".
-  return { folderId: '_unsorted', confidence: 'none', reason: 'kein GPS im Foto – bitte manuell einordnen' };
+  // Kein GPS → Datum + Uhrzeit gegen den Reiseplan (Zeitfenster je Tag).
+  // So wird z. B. Antelope (vormittags) von Grand Canyon (nachmittags) getrennt.
+  if (date) {
+    const iso = toLocalISO(date);
+    const minutes = date.getHours() * 60 + date.getMinutes();
+    const sid = scheduleStopFor(iso, minutes);
+    if (sid) {
+      const hh = String(date.getHours()).padStart(2, '0'), mm = String(date.getMinutes()).padStart(2, '0');
+      return { folderId: sid, confidence: 'time', reason: `kein GPS – nach Reiseplan (${iso}, ${hh}:${mm} Uhr)` };
+    }
+  }
+  return { folderId: '_unsorted', confidence: 'none', reason: 'kein GPS & kein Reisetag – bitte manuell einordnen' };
 }
 
 // Kompatibler Wrapper (nur Ordner-ID) für Umsortier-Logik.
