@@ -22,6 +22,8 @@ let ACCOUNTS = [];      // registrierte Accounts (pro Familienmitglied)
 let TODAY_OVERRIDE = {};// heute geänderte Werte (Aufstehzeit/Abfahrt) aus dem Chat
 let LAST_POS = null;    // zuletzt bestimmter Standort {lat,lng,ts}
 let FAMILY_CODE_HASH = null; // Familien-Sicherheitscode (gehasht) für Passwort-Reset
+let LAST_TODOS = [];    // zuletzt geladene To-Dos (für die Tagesansicht)
+let currentDay = null;  // aktuell geöffneter Tag in der Tagesansicht
 let PROFILE = null;
 let composeTag = 'msg';
 
@@ -350,7 +352,9 @@ function renderHome() {
       ${t.hotel ? `<span class="chip">🛏 ${esc(t.hotel)}</span>` : ''}
     </div>
     <div class="tc-acts">${(t.acts || []).slice(0, 4).map(a => `<span>${esc(a)}</span>`).join('')}</div>
+    <div class="tc-more">Ganzen Tag ansehen ›</div>
     ${ov.note ? `<div class="tc-note">✎ ${esc(ov.note)}${ov.by ? ` — ${esc(ov.by)}` : ''}</div>` : ''}`;
+  $('#todayCard').onclick = () => openDay(TODAY);
 
   renderAgenda();
 }
@@ -374,34 +378,98 @@ function renderAgenda() {
   const now = el.querySelector('.now'); if (now) el.scrollLeft = now.offsetLeft - 12;
 }
 
-// Detail-Ansicht eines Reisetags mit voller Tagesplanung aus der PDF.
+// Lokales Tagesdatum (YYYY-MM-DD) eines Fotos.
+function localDayISO(iso) { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+// Fotos, die AN diesem Tag aufgenommen wurden (entdoppelt, chronologisch).
+function dayPhotosFor(dateISO) {
+  const list = PHOTOS.filter(p => p.date && localDayISO(p.date) === dateISO);
+  return dedupeVisible(list).reps.sort((a, b) => tOf(a) - tOf(b));
+}
+
+// ============================================================
+// VOLLE TAGESANSICHT (Hero + Fotos + Zeitstrahl + Aufstehzeit + To-Dos)
+// ============================================================
 function openDay(dateISO) {
+  if (!itineraryFor(dateISO)) return;
+  currentDay = dateISO;
+  $('#dayView').classList.remove('hidden');
+  renderDayView(dateISO);
+}
+async function renderDayView(dateISO) {
   const d = itineraryFor(dateISO); if (!d) return;
   const i = ITINERARY.findIndex(x => x.date === dateISO);
   const isNow = dateISO === TODAY;
   const ov = isNow ? (TODAY_OVERRIDE || {}) : {};
   const wake = ov.wake || d.wake;
-  openModal(`
-    <div class="day-head">
-      <div class="day-eyebrow">Tag ${i + 1} · ${fmtDate(d.date)}${isNow ? ' · Heute' : ''}</div>
-      <h3>${esc(d.title)}</h3>
+  const photos = dayPhotosFor(dateISO);
+  const prevDate = i > 0 ? ITINERARY[i - 1].date : null;
+  const nextDate = i < ITINERARY.length - 1 ? ITINERARY[i + 1].date : null;
+  const todos = LAST_TODOS || [];
+  const timeRe = /(\d{1,2})[:.](\d{2})/;
+  const acts = (d.acts || []).map(a => { const m = a.match(timeRe); return { time: m ? `${m[1].padStart(2, '0')}:${m[2]}` : '', text: a }; });
+
+  const ov2 = $('#dayView');
+  ov2.innerHTML = `
+    <div class="dv-top">
+      <button class="iconbtn" id="dvBack">‹</button>
+      <div class="dv-nav">
+        <button class="iconbtn ${prevDate ? '' : 'off'}" id="dvPrev">‹</button>
+        <button class="iconbtn ${nextDate ? '' : 'off'}" id="dvNext">›</button>
+      </div>
     </div>
-    <div class="day-chips">
-      ${wake ? `<span class="chip">⏰ Aufstehen ${esc(wake)}</span>` : ''}
-      ${ov.departure ? `<span class="chip">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
-      ${d.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
-      ${d.km ? `<span class="chip">🚗 ${d.km} km</span>` : ''}
-      ${d.hotel ? `<span class="chip">🛏 ${esc(d.hotel)}</span>` : ''}
+    <div class="dv-hero" id="dvHero">
+      <div class="dv-hero-grad"></div>
+      <div class="dv-hero-txt">
+        <div class="dv-eyebrow">Tag ${i + 1} / ${ITINERARY.length} · ${fmtDate(dateISO)}${isNow ? ' · Heute' : ''}</div>
+        <h1>${esc(d.title)}</h1>
+        <div class="dv-chips">
+          ${wake ? `<span class="chip${ov.wake ? ' changed' : ''}">⏰ Aufstehen ${esc(wake)}</span>` : ''}
+          ${ov.departure ? `<span class="chip changed">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
+          ${d.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
+          ${d.km ? `<span class="chip">🚗 ${d.km} km</span>` : ''}
+          ${d.hotel ? `<span class="chip">🛏 ${esc(d.hotel)}</span>` : ''}
+        </div>
+      </div>
     </div>
-    <div class="day-acts">
-      ${(d.acts || []).map(a => `<div class="day-act">${esc(a)}</div>`).join('') || '<div class="empty-hint">Für diesen Tag ist noch nichts eingetragen.</div>'}
-    </div>
-    ${ov.note ? `<div class="day-note">✎ ${esc(ov.note)}${ov.by ? ` — ${esc(ov.by)}` : ''}</div>` : ''}
-    <div class="btns"><button class="btn-primary" id="dayClose">Schließen</button></div>`);
-  $('#dayClose').onclick = closeModal;
+    <div class="dv-body">
+      ${photos.length ? `
+        <div class="dv-section">
+          <div class="dv-sec-head"><b>Fotos dieses Tages</b><span>${photos.length}</span></div>
+          <div class="dv-photos" id="dvPhotos">${photos.slice(0, 40).map(p => `<div class="dv-ph" data-img="${p.id}" data-id="${p.id}"></div>`).join('')}</div>
+        </div>` : `<div class="dv-section"><div class="empty-hint">Noch keine Fotos für diesen Tag — beim Hochladen landen sie automatisch hier.</div></div>`}
+
+      <div class="dv-section">
+        <div class="dv-sec-head"><b>Tagesablauf</b></div>
+        <div class="dv-timeline">
+          ${acts.length ? acts.map(a => `<div class="dv-tl"><div class="dv-tl-time">${a.time || '•'}</div><div class="dv-tl-text">${esc(a.text)}</div></div>`).join('') : '<div class="empty-hint">Für diesen Tag ist nichts eingetragen.</div>'}
+        </div>
+      </div>
+
+      ${ov.note ? `<div class="dv-section"><div class="day-note">✎ ${esc(ov.note)}${ov.by ? ` — ${esc(ov.by)}` : ''}</div></div>` : ''}
+
+      ${todos.length ? `
+        <div class="dv-section">
+          <div class="dv-sec-head"><b>To-Dos & Ziele</b><span>${todos.length}</span></div>
+          <div class="todos">${todos.map(x => `<div class="todo-row"><div class="t-ico" style="background:${({ todo: '#3a2f14', ziel: '#14304a', wake: '#3a1f1f' })[x.kind] || '#222'}">${({ todo: '📌', ziel: '📍', wake: '⏰' })[x.kind] || '•'}</div><div class="t-body"><b>${esc(x.text)}</b><small>${esc(x.by || '')}</small></div></div>`).join('')}</div>
+        </div>` : ''}
+      <div style="height:24px"></div>
+    </div>`;
+  $('#dvBack').onclick = () => ov2.classList.add('hidden');
+  if (prevDate) $('#dvPrev').onclick = () => renderDayView(currentDay = prevDate);
+  if (nextDate) $('#dvNext').onclick = () => renderDayView(currentDay = nextDate);
+  // Hero-Bild (bestes Foto des Tages) laden
+  if (photos.length) { const url = await store.photoURL(photos[0]); if (url) $('#dvHero').style.backgroundImage = `url('${url}')`; }
+  // Foto-Strip lazy laden + Klick öffnet die Galerie mit den Tagesfotos
+  const strip = $('#dvPhotos');
+  if (strip) {
+    lazyLoadImages(strip.querySelectorAll('[data-img]'), photos);
+    strip.querySelectorAll('.dv-ph').forEach(el => el.onclick = () => openViewer(el.dataset.id, photos));
+  }
 }
 
 function renderTodos(list) {
+  LAST_TODOS = list; // für die Tagesansicht merken
+  if (currentDay && !$('#dayView').classList.contains('hidden')) renderDayView(currentDay);
   const el = $('#todos');
   if (!list.length) { el.innerHTML = `<div class="empty-hint">Noch keine To-Dos. Schreib im Chat mit 📌 To-do / 📍 Ziel / ⏰ Aufstehzeit.</div>`; return; }
   const ico = { todo: '📌', ziel: '📍', wake: '⏰' };
@@ -676,10 +744,12 @@ function lazyLoadImages(nodes, shown) {
 
 // ---- Viewer mit Wisch-/Scroll-Navigation durch die Galerie ----
 let VIEWER_LIST = [], VIEWER_IDX = 0;
-function openViewer(id) {
-  // aktuell sichtbare Fotos des Ordners als durchblätterbare Galerie
-  const list = PHOTOS.filter(p => p.folderId === currentFolder).sort((a, b) => tOf(a) - tOf(b));
-  VIEWER_LIST = (showDups ? list : dedupeVisible(list).reps);
+function openViewer(id, listOverride) {
+  // durchblätterbare Galerie: entweder übergebene Liste oder der aktuelle Ordner
+  let list;
+  if (listOverride) list = listOverride;
+  else { const inF = PHOTOS.filter(p => p.folderId === currentFolder).sort((a, b) => tOf(a) - tOf(b)); list = showDups ? inF : dedupeVisible(inF).reps; }
+  VIEWER_LIST = list;
   VIEWER_IDX = Math.max(0, VIEWER_LIST.findIndex(p => p.id === id));
   const v = $('#viewer'); v.classList.add('on');
   showViewerAt(VIEWER_IDX);
