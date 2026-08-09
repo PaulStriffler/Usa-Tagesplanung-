@@ -1,4 +1,4 @@
-const CACHE = 'usareise-v10';
+const CACHE = 'usareise-v11';
 const ASSETS = [
   './', './index.html', './exifr.js', './manifest.webmanifest',
   './css/style.css',

@@ -56,6 +56,12 @@
 <!-- ============ APP ============ -->
 <div id="app" class="hidden">
 
+  <!-- Mitteilungen-Banner -->
+  <div class="notify-banner hidden" id="notifyBanner">
+    <span>🔔 Mitteilungen erlauben — bei neuen Fotos, Nachrichten & Aufstehzeiten.</span>
+    <div class="nb-btns"><button id="notifyYes">Erlauben</button><button id="notifyNo" class="nb-x">✕</button></div>
+  </div>
+
   <!-- HOME -->
   <section class="page active" id="page-home" data-page="home">
     <header class="home-head">
@@ -141,7 +147,7 @@
   <nav class="tabbar">
     <button class="tab active" data-goto="home"><span>◎</span>Home</button>
     <button class="tab" data-goto="folders"><span>▦</span>Ordner</button>
-    <button class="tab" data-goto="chat"><span>✎</span>Chat</button>
+    <button class="tab" data-goto="chat"><span>✎</span>Chat<i class="tab-badge hidden" id="chatBadge"></i></button>
     <button class="tab" data-goto="route"><span>⤳</span>Route</button>
   </nav>
 </div>

@@ -4,13 +4,24 @@ import { readExif, assignFolder, classify, reverseGeocode, sharpness, phash, ham
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const TODAY = '2026-08-07'; // Referenz-"heute" während der Reise (aktueller Reisetag)
+// „Heute" wird DYNAMISCH aus dem echten Datum bestimmt (kein hartes Datum mehr),
+// begrenzt auf den Reisezeitraum. So springt die App automatisch auf den richtigen Tag.
+function computeToday() {
+  const d = new Date();
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const first = ITINERARY[0].date, last = ITINERARY[ITINERARY.length - 1].date;
+  if (iso < first) return first;
+  if (iso > last) return last;
+  return iso;
+}
+let TODAY = computeToday();
 
 let PHOTOS = [];        // live Foto-Metadaten
 let CUSTOM = [];        // eigene Spots
 let ACCOUNTS = [];      // registrierte Accounts (pro Familienmitglied)
 let TODAY_OVERRIDE = {};// heute geänderte Werte (Aufstehzeit/Abfahrt) aus dem Chat
 let LAST_POS = null;    // zuletzt bestimmter Standort {lat,lng,ts}
+let FAMILY_CODE_HASH = null; // Familien-Sicherheitscode (gehasht) für Passwort-Reset
 let PROFILE = null;
 let composeTag = 'msg';
 
@@ -77,6 +88,7 @@ async function afterIntro() {
   $('#intro').classList.add('hidden');
   try { await (window.__storeReady || Promise.resolve()); } catch (e) { console.warn(e); }
   try { ACCOUNTS = await store.getCollectionOnce('accounts'); } catch (e) { ACCOUNTS = []; }
+  try { const cfg = await store.getCollectionOnce('config'); FAMILY_CODE_HASH = (cfg.find(c => c.id === 'main') || {}).familyCodeHash || null; } catch (e) {}
   if (PROFILE) enterApp(); else showAuthGate();
 }
 
@@ -171,8 +183,40 @@ function openLoginSheet(m, acc) {
   };
   $('#lgGo').onclick = submit;
   $('#lgPw').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  $('#lgReset').onclick = () => {
-    if (confirm(`Passwort für ${acc.username || m.name} zurücksetzen und neu registrieren?`)) openRegisterSheet(m);
+  $('#lgReset').onclick = () => openResetSheet(m, acc);
+}
+
+// Passwort-Reset per Familien-Sicherheitscode (kein SMS nötig, kostenlos & sofort).
+function openResetSheet(m, acc) {
+  const hasCode = !!FAMILY_CODE_HASH;
+  openModal(`
+    <h3>Passwort zurücksetzen</h3>
+    <p class="sheet-lead">${hasCode
+      ? `Gib den <b>Familien-Sicherheitscode</b> ein, um das Passwort für <b style="color:${m.color}">${esc(acc?.username || m.name)}</b> neu zu setzen.`
+      : `Es ist noch <b>kein</b> Familien-Sicherheitscode festgelegt. Lege jetzt einen fest — den braucht künftig jeder in der Familie zum Zurücksetzen. Merkt ihn euch gut.`}</p>
+    <label>Familien-Sicherheitscode</label>
+    <input type="password" id="rsCode" autocomplete="off" placeholder="${hasCode ? 'Code eingeben' : 'neuen Code festlegen'}">
+    <label>Neues Passwort</label>
+    <input type="password" id="rsPw" autocomplete="new-password" placeholder="mind. 4 Zeichen">
+    <label>Neues Passwort wiederholen</label>
+    <input type="password" id="rsPw2" autocomplete="new-password">
+    <div class="btns"><button class="btn-ghost" id="rsCancel">Zurück</button><button class="btn-primary" id="rsGo">Zurücksetzen</button></div>`);
+  $('#rsCancel').onclick = closeModal;
+  $('#rsGo').onclick = async () => {
+    const code = $('#rsCode').value.trim(), pw = $('#rsPw').value, pw2 = $('#rsPw2').value;
+    if (!code) return toast('Bitte Sicherheitscode eingeben');
+    if (pw.length < 4) return toast('Passwort mind. 4 Zeichen');
+    if (pw !== pw2) return toast('Passwörter stimmen nicht überein');
+    const codeHash = await hashPw('code::' + code);
+    if (FAMILY_CODE_HASH) { if (codeHash !== FAMILY_CODE_HASH) return toast('Falscher Familien-Sicherheitscode'); }
+    else { await store.setDocData('config', 'main', { familyCodeHash: codeHash, ts: Date.now() }); FAMILY_CODE_HASH = codeHash; }
+    const hash = await hashPw(pw);
+    const username = acc?.username || m.name;
+    const account = { id: m.id, memberId: m.id, name: m.name, username, hash, ts: Date.now() };
+    await store.setDocData('accounts', m.id, account);
+    ACCOUNTS = ACCOUNTS.filter(a => a.id !== m.id).concat(account);
+    toast('Passwort neu gesetzt ✓');
+    loginSuccess(m, username);
   };
 }
 
@@ -202,18 +246,72 @@ async function startApp() {
   bindChat();
   bindRoute();
   bindLocation();
+  bindNotifications();
   $('#addSpotBtn').onclick = openSpotModal;
 
   // Live-Abos
-  store.onPhotos(list => { PHOTOS = list; onPhotosChanged(); });
+  store.onPhotos(list => { const prev = PHOTOS; PHOTOS = list; onPhotosChanged(); notifyNewPhotos(prev, list); });
   store.onCollection('agenda', renderTodos, 'ts');
-  store.onCollection('chat', renderChat, 'ts');
+  store.onCollection('chat', list => { renderChat(list); updateChatBadge(list); notifyNewChat(list); }, 'ts');
   store.onCollection('spots', list => { CUSTOM = list; renderFolders(); });
   store.onCollection('accounts', list => { ACCOUNTS = list; }, 'ts');
-  store.onCollection('today', list => { TODAY_OVERRIDE = list.find(d => d.id === TODAY) || {}; renderHome(); }, 'ts');
+  store.onCollection('today', list => { const nov = list.find(d => d.id === TODAY) || {}; notifyWakeChange(TODAY_OVERRIDE, nov); TODAY_OVERRIDE = nov; renderHome(); }, 'ts');
   store.onCollection('routes', () => {});
 
   revealOnScroll();
+}
+
+// ============================================================
+// MITTEILUNGEN (Vordergrund/aktive App) + Chat-Zähler
+// ============================================================
+let CHAT_SEEN_MAX = -1, PHOTO_SEEN = null, notifyReady = false;
+function bindNotifications() {
+  const banner = $('#notifyBanner');
+  const supported = 'Notification' in window;
+  if (supported && Notification.permission === 'granted') notifyReady = true;
+  if (supported && Notification.permission === 'default' && !localStorage.getItem('usareise.notifyDismissed')) {
+    banner.classList.remove('hidden');
+  }
+  $('#notifyYes').onclick = async () => {
+    banner.classList.add('hidden');
+    try { const p = await Notification.requestPermission(); notifyReady = (p === 'granted'); if (notifyReady) toast('Mitteilungen aktiviert 🔔'); } catch {}
+  };
+  $('#notifyNo').onclick = () => { banner.classList.add('hidden'); localStorage.setItem('usareise.notifyDismissed', '1'); };
+}
+function pushNote(title, body, tag) {
+  if (!notifyReady || document.visibilityState === 'visible') return; // sichtbar → kein Popup nötig
+  try { new Notification(title, { body, tag, icon: 'icon-192.png', badge: 'icon-192.png' }); } catch {}
+}
+function chatLastRead() { return +(localStorage.getItem('usareise.chatLastRead') || 0); }
+function markChatRead() { localStorage.setItem('usareise.chatLastRead', String(Date.now())); updateChatBadge(null); }
+function updateChatBadge(list) {
+  const el = $('#chatBadge'); if (!el) return;
+  const onChat = $('#page-chat')?.classList.contains('active');
+  if (onChat) { el.classList.add('hidden'); return; }
+  const msgs = list || LAST_CHAT || [];
+  const n = msgs.filter(m => (m.ts || 0) > chatLastRead() && m.authorId !== PROFILE?.id).length;
+  if (n > 0) { el.textContent = n > 9 ? '9+' : String(n); el.classList.remove('hidden'); }
+  else el.classList.add('hidden');
+}
+let LAST_CHAT = [];
+function notifyNewChat(list) {
+  LAST_CHAT = list;
+  const max = list.reduce((a, m) => Math.max(a, m.ts || 0), 0);
+  if (CHAT_SEEN_MAX < 0) { CHAT_SEEN_MAX = max; return; } // Erstladung nicht melden
+  const neu = list.filter(m => (m.ts || 0) > CHAT_SEEN_MAX && m.authorId !== PROFILE?.id);
+  CHAT_SEEN_MAX = max;
+  if (neu.length) { const m = neu[neu.length - 1]; pushNote(`${m.author} im Familien-Chat`, m.text, 'chat'); }
+}
+function notifyNewPhotos(prev, list) {
+  if (PHOTO_SEEN === null) { PHOTO_SEEN = new Set(list.map(p => p.id)); return; }
+  const added = list.filter(p => !PHOTO_SEEN.has(p.id) && p.photographer !== authorName());
+  list.forEach(p => PHOTO_SEEN.add(p.id));
+  if (added.length) pushNote('Neue Fotos 📷', `${added.length} neue${added.length === 1 ? 's Foto' : ' Fotos'} von ${added[0].photographer}`, 'photos');
+}
+function notifyWakeChange(oldOv, newOv) {
+  if (!oldOv || !Object.keys(oldOv).length) return;
+  if (newOv.wake && newOv.wake !== oldOv.wake) pushNote('Aufstehzeit geändert ⏰', `Neu: ${newOv.wake} Uhr (${newOv.by || ''})`, 'wake');
+  else if (newOv.departure && newOv.departure !== oldOv.departure) pushNote('Abfahrt geändert 🚙', `Neu: ${newOv.departure} Uhr`, 'wake');
 }
 
 function renderAccountChip() {
@@ -230,6 +328,7 @@ function renderAccountChip() {
 // HOME
 // ============================================================
 function renderHome() {
+  TODAY = computeToday(); // bei jedem Home-Render das echte Datum neu bestimmen
   const badge = $('#modeBadge');
   if (store.storeMode() === 'cloud') { badge.textContent = 'cloud · live'; badge.classList.add('cloud'); }
   const idx = ITINERARY.findIndex(d => d.date === TODAY);
@@ -464,11 +563,13 @@ function folderName(id) { return id === '_unsorted' ? 'Zum Einordnen' : id === '
 
 function openFolder(id) {
   currentFolder = id; showDups = false;
+  const isCustom = CUSTOM.some(c => c.id === id); // eigene Spots nicht herunterladbar
   const ov = $('#folderDetail'); ov.classList.remove('hidden');
   ov.innerHTML = `
     <div class="od-head">
       <button class="iconbtn" id="odBack">‹</button>
       <h2>${esc(folderName(id))}</h2>
+      ${isCustom ? '' : '<button class="iconbtn" id="odDownload" title="Ordner herunterladen">⤓</button>'}
     </div>
     <div class="od-toolbar">
       <span id="odCount"></span><div class="spacer"></div>
@@ -477,7 +578,43 @@ function openFolder(id) {
     <div class="photo-grid" id="odGrid"></div>`;
   $('#odBack').onclick = () => { ov.classList.add('hidden'); currentFolder = null; };
   $('#odDupToggle').onclick = () => { showDups = !showDups; renderPhotoGrid(); };
+  const dl = $('#odDownload'); if (dl) dl.onclick = () => downloadFolder(id);
   renderPhotoGrid();
+}
+
+// ---- Ordner als ZIP herunterladen (eigener, schlanker ZIP-Writer, keine Bibliothek) ----
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) { // files: [{name, data:Uint8Array}] — Speichern ohne Kompression
+  const chunks = [], central = []; let offset = 0;
+  const enc = new TextEncoder();
+  const u16 = n => [n & 0xFF, (n >> 8) & 0xFF], u32 = n => [n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF];
+  for (const f of files) {
+    const name = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+    const local = [0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0)];
+    chunks.push(new Uint8Array(local), name, f.data);
+    central.push([0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)], name);
+    offset += local.length + name.length + sz;
+  }
+  const cdStart = offset; let cdLen = 0; const cdChunks = [];
+  for (const [hdr, name] of central) { const h = new Uint8Array(hdr); cdChunks.push(h, name); cdLen += h.length + name.length; }
+  const end = [0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cdLen), ...u32(cdStart), ...u16(0)];
+  return new Blob([...chunks, ...cdChunks, new Uint8Array(end)], { type: 'application/zip' });
+}
+async function downloadFolder(id) {
+  const list = PHOTOS.filter(p => p.folderId === id);
+  const { reps } = dedupeVisible(list);
+  if (!reps.length) { toast('Keine Fotos zum Herunterladen'); return; }
+  toast(`Bereite ${reps.length} Fotos vor…`);
+  const files = []; let i = 0;
+  for (const p of reps) {
+    try { const blob = await store.photoBlob(p); if (!blob) continue; const buf = new Uint8Array(await blob.arrayBuffer()); const nm = (String(i + 1).padStart(3, '0')) + '_' + (p.name || 'foto').replace(/[^\w.\-]/g, '_'); files.push({ name: nm.endsWith('.jpg') || nm.endsWith('.jpeg') ? nm : nm + '.jpg', data: buf }); i++; } catch {}
+  }
+  if (!files.length) { toast('Download fehlgeschlagen'); return; }
+  const zip = makeZip(files);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(zip); a.download = folderName(id).replace(/[^\w]/g, '_') + '.zip'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast(`${files.length} Fotos heruntergeladen`);
 }
 
 async function renderPhotoGrid() {
@@ -505,44 +642,107 @@ async function renderPhotoGrid() {
       </div>
     </div>`).join('');
   grid.querySelectorAll('.pcard').forEach(c => c.onclick = () => openViewer(c.dataset.id));
-  grid.querySelectorAll('[data-img]').forEach(async d => {
-    const p = shown.find(x => x.id === d.dataset.img); if (p) d.style.backgroundImage = `url('${await store.photoURL(p)}')`;
-  });
+  // LAZY LOADING: Bilder erst laden, wenn die Kachel in den sichtbaren Bereich scrollt
+  // (verhindert, dass bei 168 Fotos alle gleichzeitig geladen werden → kein Hängen).
+  lazyLoadImages(grid.querySelectorAll('[data-img]'), shown);
 }
 
-// ---- Viewer ----
-async function openViewer(id) {
-  const p = PHOTOS.find(x => x.id === id); if (!p) return;
+// Lazy-Loader: lädt Foto-Thumbnails nur, wenn sie in Sichtweite scrollen. Begrenzte
+// Parallelität, damit auch große Ordner (100+ Fotos) sofort flüssig aufgehen.
+let lazyIO = null; const lazyQueue = []; let lazyActive = 0;
+function lazyPump() {
+  while (lazyActive < 4 && lazyQueue.length) {
+    const { el, p } = lazyQueue.shift(); lazyActive++;
+    store.photoURL(p).then(url => {
+      if (url) { el.style.backgroundImage = `url('${url}')`; el.classList.add('loaded'); }
+      else el.classList.add('failed');
+    }).catch(() => el.classList.add('failed')).finally(() => { lazyActive--; lazyPump(); });
+  }
+}
+function lazyLoadImages(nodes, shown) {
+  if (lazyIO) lazyIO.disconnect();
+  const byId = {}; shown.forEach(p => byId[p.id] = p);
+  lazyIO = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const el = e.target, p = byId[el.dataset.img];
+      lazyIO.unobserve(el);
+      if (p) { lazyQueue.push({ el, p }); }
+    }
+    lazyPump();
+  }, { rootMargin: '400px 0px' }); // etwas vorausladen
+  nodes.forEach(n => lazyIO.observe(n));
+}
+
+// ---- Viewer mit Wisch-/Scroll-Navigation durch die Galerie ----
+let VIEWER_LIST = [], VIEWER_IDX = 0;
+function openViewer(id) {
+  // aktuell sichtbare Fotos des Ordners als durchblätterbare Galerie
+  const list = PHOTOS.filter(p => p.folderId === currentFolder).sort((a, b) => tOf(a) - tOf(b));
+  VIEWER_LIST = (showDups ? list : dedupeVisible(list).reps);
+  VIEWER_IDX = Math.max(0, VIEWER_LIST.findIndex(p => p.id === id));
   const v = $('#viewer'); v.classList.add('on');
+  showViewerAt(VIEWER_IDX);
+  bindViewerSwipe(v);
+}
+async function showViewerAt(idx) {
+  if (idx < 0 || idx >= VIEWER_LIST.length) return;
+  VIEWER_IDX = idx;
+  const p = VIEWER_LIST[idx];
+  const v = $('#viewer');
   const url = await store.photoURL(p);
+  const hasPrev = idx > 0, hasNext = idx < VIEWER_LIST.length - 1;
   v.innerHTML = `
     <div class="vtop">
       <button class="iconbtn" id="vClose">✕</button>
+      <span class="vcount">${idx + 1} / ${VIEWER_LIST.length}</span>
       <div style="display:flex;gap:8px">
         <button class="iconbtn" id="vMove" title="Verschieben">⇄</button>
         <button class="iconbtn" id="vSave" title="Speichern">⤓</button>
         <button class="iconbtn" id="vDel" title="Löschen">🗑</button>
       </div>
     </div>
-    <img src="${url}" alt="${esc(p.name)}">
+    ${hasPrev ? '<button class="vnav prev" id="vPrev">‹</button>' : ''}
+    ${hasNext ? '<button class="vnav next" id="vNext">›</button>' : ''}
+    <img id="vImg" src="${url}" alt="${esc(p.name)}">
     <div class="vinfo">
       <b>${esc(p.name)}</b>
       <div class="vrow">
         <span>📅 ${p.date ? fmtDateTime(p.date) : 'ohne Datum'}</span>
-        <span>📍 ${esc(p.place || '—')}</span>
+        <span>📍 ${esc(p.geoLabel || p.place || '—')}</span>
         <span>📷 ${esc(p.photographer || '—')}</span>
         ${p.camera ? `<span>${esc(p.camera)}</span>` : ''}
         ${p.gps ? `<span>🌐 ${p.gps.lat.toFixed(4)}, ${p.gps.lng.toFixed(4)}</span>` : ''}
       </div>
     </div>`;
+  const img = $('#vImg'); if (img) { img.style.animation = 'vfade .22s ease'; }
   $('#vClose').onclick = () => v.classList.remove('on');
-  $('#vMove').onclick = () => openMoveModal([id]);
+  $('#vPrev') && ($('#vPrev').onclick = () => showViewerAt(idx - 1));
+  $('#vNext') && ($('#vNext').onclick = () => showViewerAt(idx + 1));
+  $('#vMove').onclick = () => openMoveModal([p.id]);
   $('#vSave').onclick = async () => {
     const blob = await store.photoBlob(p); if (!blob) return;
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = p.name || 'foto.jpg'; a.click();
     toast('Foto gespeichert');
   };
-  $('#vDel').onclick = async () => { if (confirm('Foto löschen?')) { await store.deletePhoto(id); v.classList.remove('on'); } };
+  $('#vDel').onclick = async () => { if (confirm('Foto löschen?')) { await store.deletePhoto(p.id); VIEWER_LIST.splice(idx, 1); if (!VIEWER_LIST.length) v.classList.remove('on'); else showViewerAt(Math.min(idx, VIEWER_LIST.length - 1)); } };
+}
+let viewerSwipeBound = false;
+function bindViewerSwipe(v) {
+  if (viewerSwipeBound) return; viewerSwipeBound = true;
+  let x0 = null;
+  v.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+  v.addEventListener('touchend', e => {
+    if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) < 45) return;
+    if (dx < 0) showViewerAt(VIEWER_IDX + 1); else showViewerAt(VIEWER_IDX - 1);
+  }, { passive: true });
+  document.addEventListener('keydown', e => {
+    if (!v.classList.contains('on')) return;
+    if (e.key === 'ArrowRight') showViewerAt(VIEWER_IDX + 1);
+    else if (e.key === 'ArrowLeft') showViewerAt(VIEWER_IDX - 1);
+    else if (e.key === 'Escape') v.classList.remove('on');
+  });
 }
 
 // ============================================================
@@ -765,6 +965,7 @@ function goto(page) {
   $$('.page').forEach(p => p.classList.toggle('active', p.dataset.page === page));
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.goto === page));
   if (page === 'home') revealOnScroll();
+  if (page === 'chat') markChatRead(); // Ungelesen-Zähler zurücksetzen
 }
 function revealOnScroll() {
   const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: 0.12 });
@@ -795,7 +996,11 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 (function boot() {
   PROFILE = store.myProfile();
   window.__storeReady = store.initStore().catch(e => { console.warn('Store-Init:', e); return 'local'; });
-  if (window.gsap) runIntro(); else afterIntro();
+  // Intro nur beim ersten Start (bzw. alle 6 h) — danach direkt in die App (viel schneller).
+  const lastIntro = +(localStorage.getItem('usareise.introAt') || 0);
+  const recent = Date.now() - lastIntro < 6 * 60 * 60 * 1000;
+  if (window.gsap && !recent) { localStorage.setItem('usareise.introAt', String(Date.now())); runIntro(); }
+  else { $('#intro').classList.add('hidden'); afterIntro(); }
 })();
 
 // Service Worker + automatisches Update auf ALLEN Geräten:

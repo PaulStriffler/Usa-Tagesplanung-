@@ -195,7 +195,12 @@ input,textarea{font-size:16px} /* verhindert iOS-Zoom beim Fokus */
 .od-toolbar button{font-size:12px;font-weight:700;color:var(--gold)}
 .photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:6px 14px}
 .pcard{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
-.pcard .pimg{aspect-ratio:1/1;background:#0a0e15 center/cover no-repeat}
+.pcard .pimg{aspect-ratio:1/1;background:#141d2b center/cover no-repeat;position:relative;overflow:hidden}
+.pcard .pimg:not(.loaded)::after{content:'';position:absolute;inset:0;background:linear-gradient(100deg,transparent 20%,rgba(255,255,255,.06) 50%,transparent 80%);background-size:200% 100%;animation:shimmer 1.3s infinite}
+.pcard .pimg.loaded::after{display:none}
+.pcard .pimg.failed{background:#141d2b}
+.pcard .pimg.failed::after{content:'⤓ tippen';position:absolute;inset:0;display:grid;place-items:center;color:var(--muted2);font-size:11px;animation:none}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .pcard .pinfo{padding:9px 10px}
 .pcard .pinfo b{font-size:12px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pcard .pinfo .prow{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);margin-top:3px}
@@ -211,6 +216,11 @@ input,textarea{font-size:16px} /* verhindert iOS-Zoom beim Fokus */
 .viewer.on{display:flex}
 .viewer .vtop{position:absolute;top:0;left:0;right:0;z-index:2;display:flex;justify-content:space-between;gap:8px;padding:calc(12px + var(--safe-t)) 14px 14px;background:linear-gradient(to bottom,rgba(0,0,0,.7),transparent)}
 .viewer img{flex:1;min-height:0;width:100%;object-fit:contain}
+@keyframes vfade{from{opacity:.35}to{opacity:1}}
+.viewer .vcount{position:absolute;left:50%;transform:translateX(-50%);top:calc(18px + var(--safe-t));font-size:13px;font-weight:700;color:#fff;opacity:.85}
+.viewer .vnav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:46px;height:64px;border-radius:12px;background:rgba(0,0,0,.35);color:#fff;font-size:30px;display:grid;place-items:center;backdrop-filter:blur(4px)}
+.viewer .vnav.prev{left:8px}
+.viewer .vnav.next{right:8px}
 .viewer .vinfo{position:absolute;left:0;right:0;bottom:0;padding:16px 16px calc(20px + var(--safe-b));background:linear-gradient(to top,rgba(0,0,0,.85),transparent);font-size:13px}
 .viewer .vinfo b{font-size:15px}
 .viewer .vinfo .vrow{color:#ccd3de;margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;font-size:12px}
@@ -273,6 +283,16 @@ input,textarea{font-size:16px} /* verhindert iOS-Zoom beim Fokus */
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--muted2);padding:5px 0;transition:color .15s}
 .tab span{font-size:20px;line-height:1}
 .tab.active{color:var(--gold)}
+.tab{position:relative}
+.tab-badge{position:absolute;top:2px;right:calc(50% - 24px);min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--red);color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1}
+
+/* Mitteilungen-Banner */
+.notify-banner{position:sticky;top:0;z-index:55;display:flex;align-items:center;gap:10px;justify-content:space-between;
+  background:linear-gradient(135deg,#243449,#1a2536);border-bottom:1px solid var(--line2);
+  padding:calc(10px + var(--safe-t)) 14px 10px;font-size:13px;color:var(--paper)}
+.notify-banner .nb-btns{display:flex;gap:6px;flex:none}
+.notify-banner #notifyYes{background:var(--gold);color:#241a06;font-weight:800;padding:7px 12px;border-radius:9px;font-size:13px}
+.notify-banner .nb-x{background:var(--panel2);border:1px solid var(--line2);color:var(--muted);width:30px;border-radius:9px}
 
 /* ================= MODAL / TOAST ================= */
 .modal{position:fixed;inset:0;z-index:110;background:rgba(0,0,0,.7);display:none;align-items:flex-end;justify-content:center}
