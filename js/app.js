@@ -24,6 +24,7 @@ let LAST_POS = null;    // zuletzt bestimmter Standort {lat,lng,ts}
 let FAMILY_CODE_HASH = null; // Familien-Sicherheitscode (gehasht) für Passwort-Reset
 let LAST_TODOS = [];    // zuletzt geladene To-Dos (für die Tagesansicht)
 let currentDay = null;  // aktuell geöffneter Tag in der Tagesansicht
+let DAYPLANS = {};      // eigene Programmpunkte je Tag (date -> { acts:[{id,time,text,by}] })
 let PROFILE = null;
 let composeTag = 'msg';
 
@@ -258,6 +259,7 @@ async function startApp() {
   store.onCollection('spots', list => { CUSTOM = list; renderFolders(); });
   store.onCollection('accounts', list => { ACCOUNTS = list; }, 'ts');
   store.onCollection('today', list => { const nov = list.find(d => d.id === TODAY) || {}; notifyWakeChange(TODAY_OVERRIDE, nov); TODAY_OVERRIDE = nov; renderHome(); }, 'ts');
+  store.onCollection('dayplans', list => { DAYPLANS = {}; list.forEach(d => DAYPLANS[d.id] = d); if (currentDay && !$('#dayView').classList.contains('hidden')) renderDayView(currentDay); }, 'ts');
   store.onCollection('routes', () => {});
 
   revealOnScroll();
@@ -312,7 +314,7 @@ function notifyNewPhotos(prev, list) {
 }
 function notifyWakeChange(oldOv, newOv) {
   if (!oldOv || !Object.keys(oldOv).length) return;
-  if (newOv.wake && newOv.wake !== oldOv.wake) pushNote('Aufstehzeit geändert ⏰', `Neu: ${newOv.wake} Uhr (${newOv.by || ''})`, 'wake');
+  if (newOv.wake && newOv.wake !== oldOv.wake) pushNote('Treffzeit geändert 🤝', `Neu: ${newOv.wake} Uhr (${newOv.by || ''})`, 'wake');
   else if (newOv.departure && newOv.departure !== oldOv.departure) pushNote('Abfahrt geändert 🚙', `Neu: ${newOv.departure} Uhr`, 'wake');
 }
 
@@ -345,7 +347,7 @@ function renderHome() {
     <div class="tc-eyebrow">${fmtDate(t.date)} · Heute</div>
     <div class="tc-title">${esc(t.title)}</div>
     <div class="tc-meta">
-      ${wake ? `<span class="chip${changed('wake')}">⏰ Aufstehen ${esc(wake)}</span>` : ''}
+      ${wake ? `<span class="chip${changed('wake')}">🤝 Treffen ${esc(wake)}</span>` : ''}
       ${ov.departure ? `<span class="chip changed">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
       ${t.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
       ${t.km ? `<span class="chip">🚗 ${t.km} km</span>` : ''}
@@ -368,7 +370,7 @@ function renderAgenda() {
       <div class="ac-date">${fmtDate(d.date)}${isNow ? ' · Heute' : ''}</div>
       <div class="ac-title">${esc(d.title)}</div>
       <div class="ac-sub">
-        ${d.wake ? `<span>⏰ <b>${d.wake}</b> aufstehen</span>` : `<span>—</span>`}
+        ${d.wake ? `<span>🤝 <b>${d.wake}</b> Treffen</span>` : `<span>—</span>`}
         ${d.hotel ? `<span>🛏 ${esc(d.hotel)}</span>` : ''}
       </div>
       <div class="ac-more">Antippen für Details ›</div>
@@ -406,7 +408,10 @@ async function renderDayView(dateISO) {
   const nextDate = i < ITINERARY.length - 1 ? ITINERARY[i + 1].date : null;
   const todos = LAST_TODOS || [];
   const timeRe = /(\d{1,2})[:.](\d{2})/;
-  const acts = (d.acts || []).map(a => { const m = a.match(timeRe); return { time: m ? `${m[1].padStart(2, '0')}:${m[2]}` : '', text: a }; });
+  const baseActs = (d.acts || []).map(a => { const m = a.match(timeRe); return { time: m ? `${m[1].padStart(2, '0')}:${m[2]}` : '', text: a, base: true }; });
+  const customActs = ((DAYPLANS[dateISO] || {}).acts || []).map(a => ({ time: a.time || '', text: a.text, by: a.by, id: a.id, base: false }));
+  const mins = t => t ? (+t.slice(0, 2) * 60 + +t.slice(3, 5)) : 9999; // ohne Zeit ans Ende
+  const acts = [...baseActs, ...customActs].sort((a, b) => mins(a.time) - mins(b.time));
 
   const ov2 = $('#dayView');
   ov2.innerHTML = `
@@ -423,7 +428,7 @@ async function renderDayView(dateISO) {
         <div class="dv-eyebrow">Tag ${i + 1} / ${ITINERARY.length} · ${fmtDate(dateISO)}${isNow ? ' · Heute' : ''}</div>
         <h1>${esc(d.title)}</h1>
         <div class="dv-chips">
-          ${wake ? `<span class="chip${ov.wake ? ' changed' : ''}">⏰ Aufstehen ${esc(wake)}</span>` : ''}
+          ${wake ? `<span class="chip${ov.wake ? ' changed' : ''}">🤝 Treffen ${esc(wake)}</span>` : ''}
           ${ov.departure ? `<span class="chip changed">🚙 Abfahrt ${esc(ov.departure)}</span>` : ''}
           ${d.breakfast ? `<span class="chip">🍳 Frühstück</span>` : ''}
           ${d.km ? `<span class="chip">🚗 ${d.km} km</span>` : ''}
@@ -439,9 +444,9 @@ async function renderDayView(dateISO) {
         </div>` : `<div class="dv-section"><div class="empty-hint">Noch keine Fotos für diesen Tag — beim Hochladen landen sie automatisch hier.</div></div>`}
 
       <div class="dv-section">
-        <div class="dv-sec-head"><b>Tagesablauf</b></div>
+        <div class="dv-sec-head"><b>Tagesablauf</b><button class="dv-addbtn" id="dvAddAct">＋ Programmpunkt</button></div>
         <div class="dv-timeline">
-          ${acts.length ? acts.map(a => `<div class="dv-tl"><div class="dv-tl-time">${a.time || '•'}</div><div class="dv-tl-text">${esc(a.text)}</div></div>`).join('') : '<div class="empty-hint">Für diesen Tag ist nichts eingetragen.</div>'}
+          ${acts.length ? acts.map(a => `<div class="dv-tl${a.base ? '' : ' custom'}"><div class="dv-tl-time">${a.time || '•'}</div><div class="dv-tl-text">${esc(a.text)}${a.base ? '' : `<button class="dv-tl-del" data-del="${a.id}">×</button>`}${a.base || !a.by ? '' : `<small class="dv-tl-by">${esc(a.by)}</small>`}</div></div>`).join('') : '<div class="empty-hint">Für diesen Tag ist nichts eingetragen.</div>'}
         </div>
       </div>
 
@@ -457,6 +462,9 @@ async function renderDayView(dateISO) {
   $('#dvBack').onclick = () => ov2.classList.add('hidden');
   if (prevDate) $('#dvPrev').onclick = () => renderDayView(currentDay = prevDate);
   if (nextDate) $('#dvNext').onclick = () => renderDayView(currentDay = nextDate);
+  // Tagesplan individuell bearbeiten: Programmpunkt hinzufügen / eigene entfernen
+  $('#dvAddAct').onclick = () => openAddActivity(dateISO);
+  ov2.querySelectorAll('.dv-tl-del').forEach(b => b.onclick = () => deleteActivity(dateISO, b.dataset.del));
   // Hero-Bild (bestes Foto des Tages) laden
   if (photos.length) { const url = await store.photoURL(photos[0]); if (url) $('#dvHero').style.backgroundImage = `url('${url}')`; }
   // Foto-Strip lazy laden + Klick öffnet die Galerie mit den Tagesfotos
@@ -467,11 +475,38 @@ async function renderDayView(dateISO) {
   }
 }
 
+// Eigenen Programmpunkt zu einem Tag hinzufügen (für alle sichtbar).
+function openAddActivity(dateISO) {
+  openModal(`
+    <h3>Programmpunkt</h3>
+    <p class="sheet-lead">Eigenen Punkt für <b>${fmtDate(dateISO)}</b> hinzufügen — erscheint im Tagesablauf für alle.</p>
+    <label>Uhrzeit (optional)</label>
+    <input type="text" id="aaTime" placeholder="z.B. 14:30" maxlength="5">
+    <label>Was ist geplant?</label>
+    <input type="text" id="aaText" placeholder="z.B. Eis essen am See" maxlength="120">
+    <div class="btns"><button class="btn-ghost" id="aaCancel">Abbrechen</button><button class="btn-primary" id="aaSave">Hinzufügen</button></div>`);
+  $('#aaCancel').onclick = closeModal;
+  $('#aaText').addEventListener('keydown', e => { if (e.key === 'Enter') $('#aaSave').click(); });
+  $('#aaSave').onclick = async () => {
+    const text = $('#aaText').value.trim(); if (!text) return toast('Bitte eine Beschreibung eingeben');
+    let time = $('#aaTime').value.trim(); const t = parseTime(time); time = t || '';
+    const act = { id: crypto.randomUUID(), time, text, by: authorName(), ts: Date.now() };
+    const cur = ((DAYPLANS[dateISO] || {}).acts || []).concat(act);
+    await store.setDocData('dayplans', dateISO, { acts: cur, ts: Date.now() });
+    closeModal(); toast('Programmpunkt hinzugefügt');
+  };
+}
+async function deleteActivity(dateISO, id) {
+  const cur = ((DAYPLANS[dateISO] || {}).acts || []).filter(a => a.id !== id);
+  await store.setDocData('dayplans', dateISO, { acts: cur, ts: Date.now() });
+  toast('Entfernt');
+}
+
 function renderTodos(list) {
   LAST_TODOS = list; // für die Tagesansicht merken
   if (currentDay && !$('#dayView').classList.contains('hidden')) renderDayView(currentDay);
   const el = $('#todos');
-  if (!list.length) { el.innerHTML = `<div class="empty-hint">Noch keine To-Dos. Schreib im Chat mit 📌 To-do / 📍 Ziel / ⏰ Aufstehzeit.</div>`; return; }
+  if (!list.length) { el.innerHTML = `<div class="empty-hint">Noch keine To-Dos. Schreib im Chat mit 📌 To-do / 📍 Ziel / 🤝 Treffzeit.</div>`; return; }
   const ico = { todo: '📌', ziel: '📍', wake: '⏰' };
   const bg = { todo: '#3a2f14', ziel: '#14304a', wake: '#3a1f1f' };
   el.innerHTML = list.map(x => `
@@ -881,7 +916,7 @@ function bindChat() {
   if (wakeBtn && !isPlanner()) wakeBtn.remove();
   $$('#chatTags button').forEach(b => b.onclick = () => {
     $$('#chatTags button').forEach(x => x.classList.remove('on')); b.classList.add('on'); composeTag = b.dataset.tag;
-    $('#chatInput').placeholder = { msg: 'Nachricht…', todo: 'Neues To-do…', ziel: 'Reiseziel…', wake: 'z.B. „Aufstehen 6:30" oder „Abfahrt 9:00"' }[composeTag];
+    $('#chatInput').placeholder = { msg: 'Nachricht…', todo: 'Neues To-do…', ziel: 'Reiseziel…', wake: 'z.B. „Treffen 9:00" oder „Abfahrt 9:30"' }[composeTag];
   });
   $('#chatSend').onclick = sendChat;
   $('#chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
@@ -897,7 +932,7 @@ function parseTime(text) {
 }
 async function sendChat() {
   const inp = $('#chatInput'); const text = inp.value.trim(); if (!text) return;
-  if (composeTag === 'wake' && !isPlanner()) { toast('Nur Dorothee & Jens dürfen Aufstehzeiten festlegen'); return; }
+  if (composeTag === 'wake' && !isPlanner()) { toast('Nur Dorothee & Jens dürfen Treffzeiten festlegen'); return; }
   inp.value = '';
   const ts = Date.now();
   await store.addDoc('chat', { text, tag: composeTag, author: authorName(), authorColor: PROFILE.color, authorId: PROFILE.id, ts });
@@ -909,14 +944,14 @@ async function sendChat() {
     else if (time) patch.wake = time;
     else patch.note = text;
     await store.setDocData('today', TODAY, patch);
-    toast(patch.wake ? `Aufstehzeit ${patch.wake} übernommen` : patch.departure ? `Abfahrt ${patch.departure} übernommen` : 'Heute aktualisiert');
+    toast(patch.wake ? `Treffzeit ${patch.wake} übernommen` : patch.departure ? `Abfahrt ${patch.departure} übernommen` : 'Heute aktualisiert');
   } else if (composeTag === 'todo' || composeTag === 'ziel') {
     await store.addDoc('agenda', { text, kind: composeTag, by: authorName(), ts });
   }
 }
 function renderChat(list) {
   const el = $('#chatScroll');
-  const tagLabel = { todo: '📌 To-do', ziel: '📍 Ziel', wake: '⏰ Aufstehzeit' };
+  const tagLabel = { todo: '📌 To-do', ziel: '📍 Ziel', wake: '🤝 Treffzeit' };
   const tagColor = { todo: '#c99a44', ziel: '#3f86c0', wake: '#b0483d' };
   el.innerHTML = list.map(m => {
     const mine = m.authorId === PROFILE.id;
